@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import type { Knex } from "knex";
 import type { MultiTenantOptions, TenantRecord, TenantRegistryOptions } from "./types";
-import { decryptPassword as defaultDecrypt, encryptPassword as defaultEncrypt } from "./password.js";
+import { decryptPassword as defaultDecrypt, encryptPassword as defaultEncrypt } from "./password";
 
 const REGISTRY_MARKER = "tenora:registry";
 

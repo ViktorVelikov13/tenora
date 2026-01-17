@@ -2,8 +2,8 @@ import knex, { Knex } from "knex";
 import fs from "fs";
 import path from "path";
 import type { MultiTenantOptions, TenantManager, TenoraClient } from "./types";
-import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry.js";
-import { loadConfigModuleAsync, loadConfigModuleSync, resolveConfigPath, unwrapConfig } from "./configLoader.js";
+import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry";
+import { loadConfigModuleAsync, loadConfigModuleSync, resolveConfigPath, unwrapConfig } from "./configLoader";
 
 const resolveClient = (value?: TenoraClient): TenoraClient => value ?? "pg";
 

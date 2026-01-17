@@ -3,9 +3,9 @@ import { Command } from "commander";
 import fs from "fs";
 import knex from "knex";
 import path from "path";
-import { createTenoraFactory } from "./knexFactory.js";
-import { loadConfigModuleAsync, resolveConfigPath, unwrapConfig } from "./configLoader.js";
-import { ensureRegistryMigration, listTenantsFromRegistry, resolveDecrypt } from "./tenantRegistry.js";
+import { createTenoraFactory } from "./knexFactory";
+import { loadConfigModuleAsync, resolveConfigPath, unwrapConfig } from "./configLoader";
+import { ensureRegistryMigration, listTenantsFromRegistry, resolveDecrypt } from "./tenantRegistry";
 import type { CliConfig, TenantRecord } from "./types";
 
 const program = new Command();

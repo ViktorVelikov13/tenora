@@ -1,5 +1,5 @@
-export * from "./types.js";
-export * from "./config.js";
-export { createTenoraFactory, createTenoraFactoryAsync, createKnexFactory } from "./knexFactory.js";
-export * from "./password.js";
-export * from "./tenantResolver.js";
+export * from "./types";
+export * from "./config";
+export { createTenoraFactory, createTenoraFactoryAsync, createKnexFactory } from "./knexFactory";
+export * from "./password";
+export * from "./tenantResolver";
