@@ -3,8 +3,8 @@ import { Command } from "commander";
 import fs from "fs";
 import knex from "knex";
 import path from "path";
-import { pathToFileURL } from "url";
 import { createTenoraFactory } from "./knexFactory.js";
+import { loadConfigModuleAsync, resolveConfigPath, unwrapConfig } from "./configLoader.js";
 import { ensureRegistryMigration, listTenantsFromRegistry, resolveDecrypt } from "./tenantRegistry.js";
 import type { CliConfig, TenantRecord } from "./types";
 
@@ -253,11 +253,15 @@ const ensureBaseDatabase = async (cfg: CliConfig) => {
 };
 
 const loadConfig = async (configPath: string): Promise<CliConfig> => {
-  const fullPath = path.isAbsolute(configPath)
+  const isDefault = configPath === "tenora.config.js";
+  let fullPath = path.isAbsolute(configPath)
     ? configPath
     : path.join(process.cwd(), configPath);
-  const module = await import(pathToFileURL(fullPath).href);
-  const cfg = module.default ?? module.config ?? module;
+  if (isDefault && !fs.existsSync(fullPath)) {
+    fullPath = resolveConfigPath();
+  }
+  const module = await loadConfigModuleAsync(fullPath);
+  const cfg = unwrapConfig(module);
   if (!cfg) {
     throw new Error(`No config exported from ${fullPath}`);
   }

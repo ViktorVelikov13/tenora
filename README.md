@@ -106,8 +106,11 @@ export default defineTenoraConfig({
 });
 ```
 Run with a custom file: `tenora migrate:tenants --config path/to/file.js`.
+Default lookup order: `tenora.config.js`, `tenora.config.mjs`, `tenora.config.ts` (unless `TENORA_CONFIG` is set).
 
 Tip: use `defineTenoraConfig(...)` in your config file to get IDE hints for all options.
+If your config is `.mjs` or `.ts` and you want to load it implicitly in code, use `createTenoraFactoryAsync()`
+or import the config and pass it directly to `createTenoraFactory(...)`.
 
 Encryption defaults:
 - If `encryptPassword`/`decryptPassword` are not provided, Tenora will use `process.env.TENORA_KEY` (if set).
@@ -132,6 +135,7 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 
 ## API surface
 - `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, destroyTenant, destroyAll }`
+- `createTenoraFactoryAsync(options)` → same, but can load `.mjs`/`.ts` config files via default lookup
   - `options.base`: base connection (any Knex client) + optional migrations/seeds dirs
   - `options.tenant`: migrationsDir, seedsDir, userPrefix (defaults to `user_`), pool/ssl overrides, SQLite db path options
 - `createTenantResolver({ manager, tenantId, passwordProvider?, authorizer?, attach? })`

@@ -1,11 +1,9 @@
 import knex, { Knex } from "knex";
 import fs from "fs";
 import path from "path";
-import { createRequire } from "module";
 import type { MultiTenantOptions, TenantManager, TenoraClient } from "./types";
 import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry.js";
-
-const require = createRequire(import.meta.url);
+import { loadConfigModuleAsync, loadConfigModuleSync, resolveConfigPath, unwrapConfig } from "./configLoader.js";
 
 const resolveClient = (value?: TenoraClient): TenoraClient => value ?? "pg";
 
@@ -33,19 +31,26 @@ const escapeMssqlIdent = (value: string) => value.replace(/]/g, "]]");
 const escapeSqlString = (value: string) => value.replace(/'/g, "''");
 
 const loadDefaultConfig = (): MultiTenantOptions => {
-  const configFile =
-    process.env.TENORA_CONFIG || "tenora.config.js";
-  const fullPath = path.resolve(process.cwd(), configFile);
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(
-      `Tenora: no config provided and default file not found at ${fullPath}. Set TENORA_CONFIG or pass options explicitly.`
-    );
-  }
-  const module = require(fullPath);
-  const cfg = module.default ?? module.config ?? module;
+  const explicit = process.env.TENORA_CONFIG;
+  const fullPath = resolveConfigPath(explicit ?? undefined);
+  const module = loadConfigModuleSync(fullPath);
+  const cfg = unwrapConfig(module);
   if (!cfg) {
     throw new Error(
-      `Tenora: config file ${fullPath} did not export a config object.`
+      `Tenora: config file ${path.basename(fullPath)} did not export a config object.`
+    );
+  }
+  return cfg as MultiTenantOptions;
+};
+
+export const loadDefaultConfigAsync = async (): Promise<MultiTenantOptions> => {
+  const explicit = process.env.TENORA_CONFIG;
+  const fullPath = resolveConfigPath(explicit ?? undefined);
+  const module = await loadConfigModuleAsync(fullPath);
+  const cfg = unwrapConfig(module);
+  if (!cfg) {
+    throw new Error(
+      `Tenora: config file ${path.basename(fullPath)} did not export a config object.`
     );
   }
   return cfg as MultiTenantOptions;
@@ -53,10 +58,7 @@ const loadDefaultConfig = (): MultiTenantOptions => {
 
 const defaultPool: Knex.PoolConfig = { min: 2, max: 10, acquireTimeoutMillis: 60_000, idleTimeoutMillis: 60_000 };
 
-export const createTenoraFactory = (
-  options?: MultiTenantOptions
-): TenantManager => {
-  const resolved = options ?? loadDefaultConfig();
+const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager => {
   const { base, tenant = {}, knexOptions = {} } = resolved;
   const cache = new Map<string, Knex>();
   const basePassword = normalizePassword(base.password);
@@ -357,6 +359,20 @@ export const createTenoraFactory = (
     destroyTenant,
     destroyAll,
   };
+};
+
+export const createTenoraFactory = (
+  options?: MultiTenantOptions
+): TenantManager => {
+  const resolved = options ?? loadDefaultConfig();
+  return buildTenoraFactory(resolved);
+};
+
+export const createTenoraFactoryAsync = async (
+  options?: MultiTenantOptions
+): Promise<TenantManager> => {
+  const resolved = options ?? await loadDefaultConfigAsync();
+  return buildTenoraFactory(resolved);
 };
 
 // Backwards-compatible alias
