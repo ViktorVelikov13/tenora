@@ -90,6 +90,12 @@ const makeKnexForDirs = (cfg: CliConfig, migrationsDir?: string, seedsDir?: stri
 
 const ensureBaseDatabase = async (cfg: CliConfig) => {
   const { base } = cfg;
+  const basePassword =
+    base.password === undefined || base.password === null
+      ? undefined
+      : typeof base.password === "string"
+        ? base.password
+        : String(base.password);
   const admin = knex({
     client: "pg",
     useNullAsDefault: true,
@@ -97,7 +103,7 @@ const ensureBaseDatabase = async (cfg: CliConfig) => {
       host: base.host,
       port: base.port,
       user: base.user,
-      password: base.password,
+      ...(basePassword !== undefined ? { password: basePassword } : {}),
       database: "postgres",
       ssl: base.ssl ?? false,
     },

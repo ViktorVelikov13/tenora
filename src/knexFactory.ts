@@ -7,6 +7,12 @@ import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry.js
 
 const require = createRequire(import.meta.url);
 
+const normalizePassword = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  return String(value);
+};
+
 const loadDefaultConfig = (): MultiTenantOptions => {
   const configFile =
     process.env.TENORA_CONFIG || "tenora.config.js";
@@ -34,18 +40,21 @@ export const createTenoraFactory = (
   const resolved = options ?? loadDefaultConfig();
   const { base, tenant = {}, knexOptions = {} } = resolved;
   const cache = new Map<string, Knex>();
+  const basePassword = normalizePassword(base.password);
+
+  const buildBaseConnection = (database: string): Knex.StaticConnectionConfig => ({
+    host: base.host,
+    port: base.port,
+    user: base.user,
+    ...(basePassword !== undefined ? { password: basePassword } : {}),
+    database,
+    ssl: base.ssl ?? false,
+  });
 
   const baseKnexConfig: Knex.Config = {
     client: "pg",
     useNullAsDefault: true,
-    connection: {
-      host: base.host,
-      port: base.port,
-      user: base.user,
-      password: base.password,
-      database: base.database,
-      ssl: base.ssl ?? false,
-    },
+    connection: buildBaseConnection(base.database),
     pool: base.pool ?? defaultPool,
     migrations: base.migrationsDir ? { directory: base.migrationsDir } : undefined,
     seeds: base.seedsDir ? { directory: base.seedsDir } : undefined,
@@ -54,14 +63,16 @@ export const createTenoraFactory = (
 
   const baseClient = knex(baseKnexConfig);
 
-  const buildTenantConfig = (tenantId: string, password?: string): Knex.Config => ({
+  const buildTenantConfig = (tenantId: string, password?: string): Knex.Config => {
+    const tenantPassword = normalizePassword(password ?? basePassword);
+    return ({
     client: "pg",
     useNullAsDefault: true,
     connection: {
       host: base.host,
       port: base.port,
       user: password ? `${tenant.userPrefix ?? "user_"}${tenantId}` : base.user,
-      password: password ?? base.password,
+      ...(tenantPassword !== undefined ? { password: tenantPassword } : {}),
       database: tenantId,
       ssl: tenant.ssl ?? base.ssl ?? false,
     },
@@ -69,7 +80,8 @@ export const createTenoraFactory = (
     migrations: tenant.migrationsDir ? { directory: tenant.migrationsDir } : undefined,
     seeds: tenant.seedsDir ? { directory: tenant.seedsDir } : undefined,
     ...knexOptions,
-  });
+    });
+  };
 
   /**
    * Get (or create+cache) a Knex client for the tenant.
@@ -104,11 +116,12 @@ export const createTenoraFactory = (
    */
   const createTenantDb = async (tenantId: string, password?: string) => {
     await ensureRegistryTable(baseClient, resolved);
+    const tenantPassword = normalizePassword(password);
     // Reuse a short-lived connection to base db so we can create the tenant DB/user
     const admin = knex({
       ...baseKnexConfig,
       // ensure we run against the "postgres" maintenance DB to create others
-      connection: { ...baseKnexConfig.connection as Knex.StaticConnectionConfig, database: "postgres" },
+      connection: buildBaseConnection("postgres"),
     });
 
     try {
@@ -119,9 +132,9 @@ export const createTenoraFactory = (
 
       await admin.raw(`CREATE DATABASE "${tenantId}"`);
 
-      if (password) {
+      if (tenantPassword) {
         const userName = `${tenant.userPrefix ?? "user_"}${tenantId}`;
-        await admin.raw(`CREATE USER "${userName}" WITH PASSWORD '${password}'`);
+        await admin.raw(`CREATE USER "${userName}" WITH PASSWORD '${tenantPassword}'`);
         await admin.raw(`GRANT ALL PRIVILEGES ON DATABASE "${tenantId}" TO "${userName}"`);
       }
     } finally {
@@ -129,7 +142,7 @@ export const createTenoraFactory = (
     }
 
     // Run tenant migrations if configured
-    const client = knex(buildTenantConfig(tenantId, password));
+    const client = knex(buildTenantConfig(tenantId, tenantPassword));
     try {
       if (tenant.migrationsDir) {
         await client.migrate.latest();

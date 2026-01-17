@@ -16,10 +16,16 @@ export const generateTenantPassword = (length = 32): string => {
 };
 
 export const encryptPassword = (password: string, cipherKey: string): string => {
+  if (typeof cipherKey !== "string" || cipherKey.length === 0) {
+    throw new Error("Tenora: cipherKey must be a non-empty string.");
+  }
   return CryptoJS.AES.encrypt(password, cipherKey).toString();
 };
 
 export const decryptPassword = (encryptedPassword: string, cipherKey: string): string => {
+  if (typeof cipherKey !== "string" || cipherKey.length === 0) {
+    throw new Error("Tenora: cipherKey must be a non-empty string.");
+  }
   const bytes = CryptoJS.AES.decrypt(encryptedPassword, cipherKey);
   return bytes.toString(CryptoJS.enc.Utf8);
 };
