@@ -1,13 +1,19 @@
 import { Knex } from "knex";
 
 export type BaseConnectionConfig = {
-  host: string;
-  port: number;
-  user: string;
-  password: string;
-  database: string;
+  /** Knex client/driver name (e.g., "pg", "mysql2"). Defaults to "pg". */
+  client?: string;
+  /** Full Knex connection config override. */
+  connection?: Knex.ConnectionConfig;
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  database?: string;
+  /** admin database name (defaults to "postgres" for pg and "mysql" for mysql) */
+  adminDatabase?: string;
   // Optional SSL/TLS configuration forwarded to the underlying driver (pg/mysql/etc.)
-  ssl?: Knex.PgConnectionConfig['ssl'];
+  ssl?: Knex.PgConnectionConfig['ssl'] | Record<string, unknown>;
   pool?: Knex.PoolConfig;
   migrationsDir?: string;
   seedsDir?: string;
@@ -20,6 +26,12 @@ export type TenantConfig = {
   migrationsDir?: string;
   /** directory with tenant seeds (passed to Knex) */
   seedsDir?: string;
+  /** SQLite tenant DB directory (default: base DB dir or cwd) */
+  databaseDir?: string;
+  /** SQLite tenant DB filename suffix (default: ".sqlite") */
+  databaseSuffix?: string;
+  /** Optional tenant database name/filename resolver */
+  databaseName?: (tenantId: string) => string;
   /** custom pool settings for tenant connections */
   pool?: Knex.PoolConfig;
   /** override ssl option for tenant connections */

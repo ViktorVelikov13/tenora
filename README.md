@@ -72,6 +72,14 @@ Notes:
 - Template output is auto-selected based on the nearest `package.json` (`"type": "module"` → ESM, otherwise CJS).
 - Use `--esm` or `--cjs` to override template output for `make:migration:*` and `make:seed:*`.
 
+### Multiple DBMS
+Set `base.client` to the Knex client you want (e.g., `"pg"`, `"mysql2"`, `"mariadb"`, `"sqlite3"`, `"mssql"`). Tenora uses the
+same client for tenant connections. Use `base.connection` when the driver needs non-standard fields (e.g., `server` for SQL Server
+or `filename` for SQLite).
+
+`createTenantDb` and `--create-base` support **Postgres**, **MySQL/MariaDB**, **SQLite**, and **SQL Server**. For other drivers,
+provision the base and tenant databases externally and Tenora will connect to them.
+
 ### CLI config (tenora.config.js by default)
 ```js
 // tenora.config.js
@@ -79,11 +87,14 @@ import { decryptPassword, encryptPassword } from "tenora";
 
 export default {
   base: {
+    client: "pg", // or "mysql2"
     host,
     port: 5432,
     user,
     password,
     database: "base",
+    // adminDatabase: "postgres", // optional override for create-base/create-tenant
+    // connection: { /* full Knex connection config override (useful for sqlite/mssql) */ },
     migrationsDir: "migrations/base",
     seedsDir: "seeds/base", // optional
   },
@@ -95,6 +106,10 @@ export default {
 };
 ```
 Run with a custom file: `tenora migrate:tenants --config path/to/file.js`.
+
+SQLite notes:
+- For SQLite, set `base.database` to a file path or provide `base.connection.filename`.
+- Tenant DB files default to `<cwd>/<tenantId>.sqlite`; customize with `tenant.databaseDir`, `tenant.databaseSuffix`, or `tenant.databaseName`.
 
 ### Tenant registry (auto-migration)
 Tenora stores tenants in a **registry table** in your base DB. The CLI will **auto-generate** a base migration
@@ -111,8 +126,8 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 
 ## API surface
 - `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, destroyTenant, destroyAll }`
-  - `options.base`: Postgres connection + optional migrations/seeds dirs
-  - `options.tenant`: migrationsDir, seedsDir, userPrefix (defaults to `user_`), pool/ssl overrides
+  - `options.base`: base connection (any Knex client) + optional migrations/seeds dirs
+  - `options.tenant`: migrationsDir, seedsDir, userPrefix (defaults to `user_`), pool/ssl overrides, SQLite db path options
 - `createTenantResolver({ manager, tenantId, passwordProvider?, authorizer?, attach? })`
   - Returns async `(req) => { tenantId?, knex? }`
   - Default attaches `req.tenantId` and `req.knex`; customize via `attach`
