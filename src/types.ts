@@ -6,7 +6,8 @@ export type BaseConnectionConfig = {
   user: string;
   password: string;
   database: string;
-  ssl?: Knex.StaticConnectionConfig['ssl'];
+  // Optional SSL/TLS configuration forwarded to the underlying driver (pg/mysql/etc.)
+  ssl?: Knex.PgConnectionConfig['ssl'];
   pool?: Knex.PoolConfig;
   migrationsDir?: string;
   seedsDir?: string;
@@ -22,13 +23,33 @@ export type TenantConfig = {
   /** custom pool settings for tenant connections */
   pool?: Knex.PoolConfig;
   /** override ssl option for tenant connections */
-  ssl?: Knex.StaticConnectionConfig['ssl'];
+  ssl?: Knex.PgConnectionConfig['ssl'];
+};
+
+export type TenantRegistryOptions = {
+  /** registry table name (default: tenora_tenants) */
+  table?: string;
+  /** primary key column for tenant id (default: id) */
+  idColumn?: string;
+  /** optional column for storing plaintext passwords (default: password) */
+  passwordColumn?: string;
+  /** optional column for storing encrypted passwords (default: encrypted_password) */
+  encryptedPasswordColumn?: string;
+  /** created timestamp column (default: created_at) */
+  createdAtColumn?: string;
+  /** updated timestamp column (default: updated_at) */
+  updatedAtColumn?: string;
 };
 
 export type MultiTenantOptions = {
   base: BaseConnectionConfig;
   tenant?: TenantConfig;
   knexOptions?: Omit<Knex.Config, "client" | "connection">;
+  registry?: TenantRegistryOptions;
+  /** optional encrypt hook for storing tenant DB passwords */
+  encryptPassword?: (plain: string) => string;
+  /** optional decrypt hook for reading encrypted passwords */
+  decryptPassword?: (encrypted: string) => string;
 };
 
 export type TenantPasswordProvider = (tenantId: string) => Promise<string | undefined> | string | undefined;
@@ -59,7 +80,4 @@ export type TenantRecord = {
   encryptedPassword?: string;
 };
 
-export type CliConfig = MultiTenantOptions & {
-  listTenants: () => Promise<TenantRecord[]> | TenantRecord[];
-  decryptPassword?: (encrypted: string) => string;
-};
+export type CliConfig = MultiTenantOptions;

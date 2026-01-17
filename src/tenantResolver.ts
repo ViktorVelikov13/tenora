@@ -1,5 +1,5 @@
-import { Knex } from "knex";
-import { TenantResolverOptions, TenantResolver } from "./types";
+import type { Knex } from "knex";
+import type { TenantResolverOptions, TenantResolver } from "./types";
 
 /**
  * Framework-agnostic tenant resolver.

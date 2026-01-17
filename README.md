@@ -15,7 +15,7 @@ npm install tenora
 ```
 
 ## Core concepts
-- **Base database**: shared metadata (e.g., tenant registry). Tenora connects via a base Knex config.
+- **Base database**: shared metadata (tenant registry). Tenora connects via a base Knex config and stores tenants in a registry table.
 - **Tenant database**: one Postgres database per tenant. Tenora can create it, create a dedicated DB user, and run tenant migrations/seeds.
 - **Tenant resolver**: your middleware hook that picks the tenant ID per request and attaches a tenant-bound Knex instance.
 - **Cache**: Tenora caches Knex instances per tenant to avoid pool churn; you can destroy them explicitly when needed.
@@ -58,13 +58,24 @@ Tenora ships with a CLI for migrations and rollbacks.
 Commands:
 - `tenora migrate` (alias `migrate:base`) / `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants` / `tenora rollback:tenants`
+- `tenora make:migration:base <name>` / `tenora make:migration:tenants <name>`
+- `tenora make:seed:base <name>` / `tenora make:seed:tenants <name>`
+- `tenora seed:run` (alias `seed:run:base`) / `tenora seed:run:tenants`
 - `tenora list` (help)
+
+Options:
+- `--create-base`: create the base database (from `base.database`) if it does not exist.
+
+Notes:
+- `make:migration:*` requires the corresponding `migrationsDir`.
+- `make:seed:*` and `seed:run*` require the corresponding `seedsDir`.
+- Template output is auto-selected based on the nearest `package.json` (`"type": "module"` → ESM, otherwise CJS).
+- Use `--esm` or `--cjs` to override template output for `make:migration:*` and `make:seed:*`.
 
 ### CLI config (tenora.config.js by default)
 ```js
 // tenora.config.js
-import { decryptPassword } from "tenora";
-import Tenants from "./models/Tenants"; // your data source for tenant ids/passwords
+import { decryptPassword, encryptPassword } from "tenora";
 
 export default {
   base: {
@@ -77,12 +88,26 @@ export default {
     seedsDir: "seeds/base", // optional
   },
   tenant: { migrationsDir: "migrations/tenants", seedsDir: "seeds/tenants" },
-  listTenants: async () =>
-    Tenants.query().select("id", "db_password as encryptedPassword"),
+  // Optional: customize where tenant records live (default: tenora_tenants)
+  registry: { table: "tenora_tenants" },
+  encryptPassword: (plain) => encryptPassword(plain, process.env.CIPHER_KEY),
   decryptPassword: (enc) => decryptPassword(enc, process.env.CIPHER_KEY),
 };
 ```
 Run with a custom file: `tenora migrate:tenants --config path/to/file.js`.
+
+### Tenant registry (auto-migration)
+Tenora stores tenants in a **registry table** in your base DB. The CLI will **auto-generate** a base migration
+the first time you run `tenora migrate` (or `migrate:base`). This gives you a file you can **rename or edit**
+before applying it.
+Make sure `base.migrationsDir` is set so Tenora knows where to write the migration.
+
+Defaults (customizable via `registry`):
+- table: `tenora_tenants`
+- columns: `id`, `password`, `encrypted_password`, `created_at`, `updated_at`
+
+If you rename the table or columns in the generated migration, update `registry` in your config to match.
+If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypted_password`; otherwise it stores the plain password in `password`.
 
 ## API surface
 - `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, destroyTenant, destroyAll }`
@@ -95,7 +120,7 @@ Run with a custom file: `tenora migrate:tenants --config path/to/file.js`.
 
 ## Typical lifecycle
 1) **Bootstrap**: create factory once at app start.
-2) **Provision**: `createTenantDb(tenantId, password?)` when a new tenant signs up.
+2) **Provision**: `createTenantDb(tenantId, password?)` when a new tenant signs up (also writes to registry table).
 3) **Store creds**: save encrypted tenant DB password in your base DB.
 4) **Request flow**: middleware runs `createTenantResolver` → attaches `req.knex` for Objection queries.
 5) **Migrate**: use CLI to keep base and tenant schemas in sync.

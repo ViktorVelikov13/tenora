@@ -2,7 +2,8 @@ import knex, { Knex } from "knex";
 import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
-import { MultiTenantOptions, TenantManager } from "./types";
+import type { MultiTenantOptions, TenantManager } from "./types";
+import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry.js";
 
 const require = createRequire(import.meta.url);
 
@@ -102,6 +103,7 @@ export const createTenoraFactory = (
    * Mirrors createDB.ts from the reference project.
    */
   const createTenantDb = async (tenantId: string, password?: string) => {
+    await ensureRegistryTable(baseClient, resolved);
     // Reuse a short-lived connection to base db so we can create the tenant DB/user
     const admin = knex({
       ...baseKnexConfig,
@@ -139,6 +141,8 @@ export const createTenoraFactory = (
       await client.destroy();
       cache.delete(tenantId);
     }
+
+    await upsertTenantInRegistry(baseClient, resolved, tenantId, password);
   };
 
   return {
