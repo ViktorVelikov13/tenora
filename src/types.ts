@@ -1,8 +1,21 @@
 import { Knex } from "knex";
 
+export type TenoraClient =
+  | "pg"
+  | "postgres"
+  | "postgresql"
+  | "mysql"
+  | "mysql2"
+  | "mariadb"
+  | "sqlite3"
+  | "better-sqlite3"
+  | "sqlite"
+  | "mssql"
+  | "sqlserver";
+
 export type BaseConnectionConfig = {
   /** Knex client/driver name (e.g., "pg", "mysql2"). Defaults to "pg". */
-  client?: string;
+  client?: TenoraClient;
   /** Full Knex connection config override. */
   connection?: Knex.ConnectionConfig;
   host?: string;

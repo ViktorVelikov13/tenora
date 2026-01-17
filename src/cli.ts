@@ -5,7 +5,7 @@ import knex from "knex";
 import path from "path";
 import { pathToFileURL } from "url";
 import { createTenoraFactory } from "./knexFactory.js";
-import { ensureRegistryMigration, listTenantsFromRegistry } from "./tenantRegistry.js";
+import { ensureRegistryMigration, listTenantsFromRegistry, resolveDecrypt } from "./tenantRegistry.js";
 import type { CliConfig, TenantRecord } from "./types";
 
 const program = new Command();
@@ -264,10 +264,15 @@ const loadConfig = async (configPath: string): Promise<CliConfig> => {
   return cfg as CliConfig;
 };
 
-const getTenantPassword = (tenant: TenantRecord, decryptPassword?: (encrypted: string) => string) => {
+const getTenantPassword = (
+  tenant: TenantRecord,
+  decryptPassword?: (encrypted: string) => string,
+  cfg?: CliConfig
+) => {
   if (tenant.password) return tenant.password;
-  if (tenant.encryptedPassword && decryptPassword) {
-    return decryptPassword(tenant.encryptedPassword);
+  if (tenant.encryptedPassword) {
+    const resolver = decryptPassword ?? (cfg ? resolveDecrypt(cfg) : undefined);
+    if (resolver) return resolver(tenant.encryptedPassword);
   }
   return undefined;
 };
@@ -366,7 +371,7 @@ const addTenantCommands = () => {
       try {
         const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
         for (const tenant of tenants) {
-          const pwd = getTenantPassword(tenant, cfg.decryptPassword);
+          const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
           const knex = manager.getTenant(tenant.id, pwd);
           const [, files] = await knex.migrate.latest();
           console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "up to date"}`);
@@ -387,7 +392,7 @@ const addTenantCommands = () => {
       try {
         const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
         for (const tenant of tenants) {
-          const pwd = getTenantPassword(tenant, cfg.decryptPassword);
+          const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
           const knex = manager.getTenant(tenant.id, pwd);
           const [, files] = await knex.migrate.rollback();
           console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "Nothing to rollback"}`);
@@ -549,10 +554,10 @@ program
     if (ensureRegistryMigrationIfNeeded(cfg)) return;
       const manager = createTenoraFactory(cfg);
       try {
-        const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
-        for (const tenant of tenants) {
-          const pwd = getTenantPassword(tenant, cfg.decryptPassword);
-          const knex = manager.getTenant(tenant.id, pwd);
+      const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
+      for (const tenant of tenants) {
+        const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
+        const knex = manager.getTenant(tenant.id, pwd);
           const result = await knex.seed.run();
           const files = Array.isArray(result) ? result[0] : [];
           console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "No seeds executed"}`);

@@ -2,23 +2,23 @@ import knex, { Knex } from "knex";
 import fs from "fs";
 import path from "path";
 import { createRequire } from "module";
-import type { MultiTenantOptions, TenantManager } from "./types";
+import type { MultiTenantOptions, TenantManager, TenoraClient } from "./types";
 import { ensureRegistryTable, upsertTenantInRegistry } from "./tenantRegistry.js";
 
 const require = createRequire(import.meta.url);
 
-const resolveClient = (value?: string): string => value ?? "pg";
+const resolveClient = (value?: TenoraClient): TenoraClient => value ?? "pg";
 
-const isPostgresClient = (client: string): boolean =>
+const isPostgresClient = (client: TenoraClient): boolean =>
   client === "pg" || client === "postgres" || client === "postgresql";
 
-const isMysqlClient = (client: string): boolean =>
+const isMysqlClient = (client: TenoraClient): boolean =>
   client === "mysql" || client === "mysql2" || client === "mariadb";
 
-const isSqliteClient = (client: string): boolean =>
+const isSqliteClient = (client: TenoraClient): boolean =>
   client === "sqlite3" || client === "better-sqlite3" || client === "sqlite";
 
-const isMssqlClient = (client: string): boolean =>
+const isMssqlClient = (client: TenoraClient): boolean =>
   client === "mssql" || client === "sqlserver";
 
 const normalizePassword = (value: unknown): string | undefined => {

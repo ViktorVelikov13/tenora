@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import type { Knex } from "knex";
 import type { MultiTenantOptions, TenantRecord, TenantRegistryOptions } from "./types";
+import { decryptPassword as defaultDecrypt, encryptPassword as defaultEncrypt } from "./password.js";
 
 const REGISTRY_MARKER = "tenora:registry";
 
@@ -20,6 +21,24 @@ export const resolveRegistry = (
   ...DEFAULT_REGISTRY,
   ...(options.registry ?? {}),
 });
+
+const resolveEncrypt = (options: MultiTenantOptions) => {
+  if (options.encryptPassword) return options.encryptPassword;
+  const key = process.env.TENORA_KEY;
+  if (key) {
+    return (plain: string) => defaultEncrypt(plain, key);
+  }
+  return undefined;
+};
+
+export const resolveDecrypt = (options: MultiTenantOptions) => {
+  if (options.decryptPassword) return options.decryptPassword;
+  const key = process.env.TENORA_KEY;
+  if (key) {
+    return (encrypted: string) => defaultDecrypt(encrypted, key);
+  }
+  return undefined;
+};
 
 const listMigrationFiles = (dir: string): string[] => {
   if (!fs.existsSync(dir)) return [];
@@ -119,10 +138,8 @@ export const upsertTenantInRegistry = async (
   const registry = resolveRegistry(options);
   await ensureRegistryTable(base, options);
 
-  const encrypted =
-    password && options.encryptPassword
-      ? options.encryptPassword(password)
-      : undefined;
+  const encrypt = resolveEncrypt(options);
+  const encrypted = password && encrypt ? encrypt(password) : undefined;
 
   const record: Record<string, string> = {
     [registry.idColumn]: tenantId,

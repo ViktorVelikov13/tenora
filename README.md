@@ -83,9 +83,9 @@ provision the base and tenant databases externally and Tenora will connect to th
 ### CLI config (tenora.config.js by default)
 ```js
 // tenora.config.js
-import { decryptPassword, encryptPassword } from "tenora";
+import { defineTenoraConfig, decryptPassword, encryptPassword } from "tenora";
 
-export default {
+export default defineTenoraConfig({
   base: {
     client: "pg", // or "mysql2"
     host,
@@ -103,9 +103,15 @@ export default {
   registry: { table: "tenora_tenants" },
   encryptPassword: (plain) => encryptPassword(plain, process.env.CIPHER_KEY),
   decryptPassword: (enc) => decryptPassword(enc, process.env.CIPHER_KEY),
-};
+});
 ```
 Run with a custom file: `tenora migrate:tenants --config path/to/file.js`.
+
+Tip: use `defineTenoraConfig(...)` in your config file to get IDE hints for all options.
+
+Encryption defaults:
+- If `encryptPassword`/`decryptPassword` are not provided, Tenora will use `process.env.TENORA_KEY` (if set).
+- If no key is present, Tenora stores plaintext passwords in the registry.
 
 SQLite notes:
 - For SQLite, set `base.database` to a file path or provide `base.connection.filename`.
