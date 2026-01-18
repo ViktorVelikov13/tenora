@@ -58,8 +58,8 @@ Tenora ships with a CLI for migrations and rollbacks.
 Commands:
 - `tenora migrate` (alias `migrate:base`) / `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants` / `tenora rollback:tenants`
-- `tenora make:migration:base <name>` / `tenora make:migration:tenants <name>`
-- `tenora make:seed:base <name>` / `tenora make:seed:tenants <name>`
+- `tenora make:migration <name>` (alias `make:migration:base`) / `tenora make:migration:tenants <name>`
+- `tenora make:seed <name>` (alias `make:seed:base`) / `tenora make:seed:tenants <name>`
 - `tenora seed:run` (alias `seed:run:base`) / `tenora seed:run:tenants`
 - `tenora list` (help)
 
@@ -71,6 +71,10 @@ Notes:
 - `make:seed:*` and `seed:run*` require the corresponding `seedsDir`.
 - Template output is auto-selected based on the nearest `package.json` (`"type": "module"` → ESM, otherwise CJS).
 - Use `--esm` or `--cjs` to override template output for `make:migration:*` and `make:seed:*`.
+- Migration templates infer common patterns:
+  - `create_users` / `create_users_table` → `createTable("users")`
+  - `add_email_to_users` → `alterTable("users").addColumn("email")`
+  - `remove_email_from_users` / `drop_email_from_users` → `alterTable("users").dropColumn("email")`
 
 ### Multiple DBMS
 Set `base.client` to the Knex client you want (e.g., `"pg"`, `"mysql2"`, `"mariadb"`, `"sqlite3"`, `"mssql"`). Tenora uses the
