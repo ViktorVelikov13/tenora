@@ -6,6 +6,12 @@
   ],
   "scripts": {
     "build": "npm -w @tenora/multi-tenant run build",
-    "pack": "npm -w @tenora/multi-tenant pack"
+    "pack": "npm -w @tenora/multi-tenant pack",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.1"
   }
 }
