@@ -22,27 +22,31 @@
     "knex",
     "objection",
     "multi-tenant",
-    "fastify",
     "postgres"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "commander": "^13.1.0",
+    "commander": "^14.0.3",
     "crypto-js": "^4.2.0",
     "knex": "^3.1.0",
     "objection": "^3.1.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.0",
+    "@types/node": "^25.2.0",
     "tsup": "^8.5.1",
     "typescript": "^5.6.3"
   },
-  "peerDependencies": {
-    "fastify": ">=4",
-    "pg": ">=8"
-  },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ViktorVelikov13/tenora.git",
+    "directory": "packages/multi-tenant"
+  },
+  "homepage": "https://github.com/ViktorVelikov13/tenora#readme",
+  "bugs": {
+    "url": "https://github.com/ViktorVelikov13/tenora/issues"
   }
 }
