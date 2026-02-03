@@ -1,5 +1,11 @@
 # @tenora/multi-tenant
 
+## 0.1.2
+
+### Patch Changes
+
+- Update dependencies and remove peer deps
+
 ## 0.1.1
 
 ### Patch Changes
