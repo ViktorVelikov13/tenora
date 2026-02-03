@@ -1,6 +1,6 @@
 {
   "name": "@tenora/multi-tenant",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Reusable multi-tenant helper for Knex + Objection (Fastify friendly)",
   "type": "module",
   "main": "dist/index.js",
