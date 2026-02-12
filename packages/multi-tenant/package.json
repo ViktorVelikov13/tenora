@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "prepack": "npm run build",
+    "prepack": "npm -w @tenora/core run build && npm run build",
     "lint": "echo 'add your linter'"
   },
   "keywords": [
