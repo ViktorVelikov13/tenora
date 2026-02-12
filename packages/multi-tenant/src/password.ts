@@ -1,31 +1,5 @@
-import CryptoJS from "crypto-js";
-
-/**
- * Generate a random password suitable for per-tenant DB users.
- */
-export const generateTenantPassword = (length = 32): string => {
-  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*";
-  let password = "";
-
-  for (let i = 0; i < length; i++) {
-    const randomIndex = Math.floor(Math.random() * charset.length);
-    password += charset[randomIndex];
-  }
-
-  return password;
-};
-
-export const encryptPassword = (password: string, cipherKey: string): string => {
-  if (typeof cipherKey !== "string" || cipherKey.length === 0) {
-    throw new Error("Tenora: cipherKey must be a non-empty string.");
-  }
-  return CryptoJS.AES.encrypt(password, cipherKey).toString();
-};
-
-export const decryptPassword = (encryptedPassword: string, cipherKey: string): string => {
-  if (typeof cipherKey !== "string" || cipherKey.length === 0) {
-    throw new Error("Tenora: cipherKey must be a non-empty string.");
-  }
-  const bytes = CryptoJS.AES.decrypt(encryptedPassword, cipherKey);
-  return bytes.toString(CryptoJS.enc.Utf8);
-};
+export {
+  generateTenantPassword,
+  encryptPassword,
+  decryptPassword,
+} from "@tenora/core";

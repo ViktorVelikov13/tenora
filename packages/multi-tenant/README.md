@@ -11,7 +11,7 @@ A framework-agnostic multi-tenant toolkit for Node.js (Knex + Objection). Tenora
 ## Installation
 ```bash
 npm install @tenora/multi-tenant
-# peers: knex, objection, pg (install if not already in your project)
+# install the DB driver you use (for example: pg, mysql2, mariadb, sqlite3, mssql)
 ```
 
 ## Core concepts
@@ -54,6 +54,8 @@ await SomeModel.query(req.knex).where(...);
 
 ## Built-in CLI (`tenora`)
 Tenora ships with a CLI for migrations and rollbacks.
+For new projects, prefer installing `@tenora/cli` (standalone package).
+`@tenora/multi-tenant` keeps `tenora` for backwards compatibility.
 
 Commands:
 - `tenora migrate` (alias `migrate:base`) / `tenora rollback` (alias `rollback:base`)

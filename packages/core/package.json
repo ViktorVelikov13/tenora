@@ -1,12 +1,15 @@
 {
-  "name": "@tenora/multi-tenant",
+  "name": "@tenora/core",
   "version": "0.2.0",
-  "description": "Reusable multi-tenant helper for Knex + Objection (Fastify friendly)",
+  "description": "Shared core utilities for Tenora packages",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": {
-    "tenora": "dist/cli.js"
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "files": [
     "dist",
@@ -19,19 +22,19 @@
     "lint": "echo 'add your linter'"
   },
   "keywords": [
-    "knex",
-    "objection",
+    "tenora",
+    "core",
     "multi-tenant",
-    "postgres"
+    "knex"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@tenora/core": "^0.2.0",
     "commander": "^14.0.3",
-    "crypto-js": "^4.2.0",
-    "knex": "^3.1.0",
-    "objection": "^3.1.2"
+    "crypto-js": "^4.2.0"
+  },
+  "peerDependencies": {
+    "knex": "^3.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.2.0",
@@ -44,7 +47,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ViktorVelikov13/tenora.git",
-    "directory": "packages/multi-tenant"
+    "directory": "packages/core"
   },
   "homepage": "https://github.com/ViktorVelikov13/tenora#readme",
   "bugs": {
