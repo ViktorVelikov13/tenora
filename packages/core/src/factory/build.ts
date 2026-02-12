@@ -1,8 +1,9 @@
 import fs from "fs";
-import knex, { Knex } from "knex";
+import type { Knex } from "knex";
 import path from "path";
 import type { MultiTenantOptions, TenantManager } from "../types";
 import { ensureRegistryTable, upsertTenantInRegistry } from "../tenantRegistry";
+import { resolveKnex } from "../runtime/resolveKnex";
 import {
   escapeMssqlIdent,
   escapeMysqlIdent,
@@ -24,6 +25,7 @@ const defaultPool: Knex.PoolConfig = {
 };
 
 export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager => {
+  const knex = resolveKnex();
   const { base, tenant = {}, knexOptions = {} } = resolved;
   const cache = new Map<string, Knex>();
   const basePassword = normalizePassword(base.password);
