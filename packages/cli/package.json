@@ -1,12 +1,18 @@
 {
-  "name": "@tenora/multi-tenant",
+  "name": "@tenora/cli",
   "version": "0.2.0",
-  "description": "Reusable multi-tenant helper for Knex + Objection (Fastify friendly)",
+  "description": "Standalone Tenora CLI",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "tenora": "dist/cli.js"
+  },
+  "main": "dist/cli.js",
+  "types": "dist/cli.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    }
   },
   "files": [
     "dist",
@@ -19,19 +25,17 @@
     "lint": "echo 'add your linter'"
   },
   "keywords": [
+    "tenora",
+    "cli",
     "knex",
-    "objection",
-    "multi-tenant",
-    "postgres"
+    "multi-tenant"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "@tenora/core": "^0.2.0",
     "commander": "^14.0.3",
-    "crypto-js": "^4.2.0",
-    "knex": "^3.1.0",
-    "objection": "^3.1.2"
+    "knex": "^3.1.0"
   },
   "devDependencies": {
     "@types/node": "^25.2.0",
@@ -44,7 +48,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ViktorVelikov13/tenora.git",
-    "directory": "packages/multi-tenant"
+    "directory": "packages/cli"
   },
   "homepage": "https://github.com/ViktorVelikov13/tenora#readme",
   "bugs": {

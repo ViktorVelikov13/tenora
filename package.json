@@ -5,8 +5,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm -w @tenora/multi-tenant run build",
-    "pack": "npm -w @tenora/multi-tenant pack",
+    "build": "npm -w @tenora/core run build && npm -w @tenora/multi-tenant run build && npm -w @tenora/cli run build",
+    "pack": "npm -w @tenora/core pack && npm -w @tenora/multi-tenant pack && npm -w @tenora/cli pack",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "changeset publish"

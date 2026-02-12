@@ -3,7 +3,6 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
-    cli: "src/cli.ts",
   },
   format: ["esm"],
   dts: true,
@@ -11,16 +10,8 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   external: [
-    "@tenora/core",
     "knex",
-    "objection",
     "commander",
     "crypto-js",
-    "pg",
-    "mysql2",
-    "mariadb",
-    "sqlite3",
-    "better-sqlite3",
-    "mssql",
   ],
 });

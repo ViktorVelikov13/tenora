@@ -2,7 +2,6 @@ import { defineConfig } from "tsup";
 
 export default defineConfig({
   entry: {
-    index: "src/index.ts",
     cli: "src/cli.ts",
   },
   format: ["esm"],
@@ -13,9 +12,7 @@ export default defineConfig({
   external: [
     "@tenora/core",
     "knex",
-    "objection",
     "commander",
-    "crypto-js",
     "pg",
     "mysql2",
     "mariadb",

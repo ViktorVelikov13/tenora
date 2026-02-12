@@ -1,8 +1,8 @@
-# @tenora/multi-tenant
+# @tenora/cli
 
 ## 0.2.0
 
-### Patch Changes
+### Minor Changes
 
 - Split CLI into a new standalone package (`@tenora/cli`), add shared core package (`@tenora/core`), and keep `@tenora/multi-tenant` CLI compatibility.
 
@@ -13,17 +13,7 @@
   - Keep `tenora` available from `@tenora/multi-tenant` for backwards-compatible upgrades.
   - Update workspace scripts and documentation for the three-package setup.
 
+### Patch Changes
+
 - Updated dependencies
   - @tenora/core@0.2.0
-
-## 0.1.2
-
-### Patch Changes
-
-- Update dependencies and remove peer deps
-
-## 0.1.1
-
-### Patch Changes
-
-- 05d46ea: Initial public release of Tenora multi‑tenant helpers and CLI.
