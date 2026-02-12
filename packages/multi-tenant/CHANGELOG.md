@@ -1,5 +1,18 @@
 # @tenora/multi-tenant
 
+## 0.2.1
+
+### Patch Changes
+
+- Fix global CLI database driver resolution by loading `knex` from the current working directory first.
+
+  - `@tenora/core` now resolves `knex` from the user project first, with fallback to package-local `knex`.
+  - This allows globally installed `@tenora/cli` to use project-installed drivers like `pg` without requiring global driver installs.
+  - No public API changes.
+
+- Updated dependencies
+  - @tenora/core@0.2.1
+
 ## 0.2.0
 
 ### Patch Changes

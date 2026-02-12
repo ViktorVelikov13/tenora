@@ -1,7 +1,7 @@
 import fs from "fs";
-import knex from "knex";
 import path from "path";
 import type { CliConfig } from "../types";
+import { resolveKnex } from "../runtime/resolveKnex";
 
 const resolveClient = (value?: string): string => value ?? "pg";
 
@@ -112,7 +112,7 @@ const buildBaseConnection = (cfg: CliConfig, databaseOverride?: string) => {
 };
 
 export const makeKnexForDirs = (cfg: CliConfig, migrationsDir?: string, seedsDir?: string) =>
-  knex({
+  resolveKnex()({
     client: resolveClient(cfg.base.client),
     useNullAsDefault: true,
     connection: buildBaseConnection(cfg),
@@ -121,6 +121,7 @@ export const makeKnexForDirs = (cfg: CliConfig, migrationsDir?: string, seedsDir
   });
 
 export const ensureBaseDatabase = async (cfg: CliConfig) => {
+  const knex = resolveKnex();
   const client = resolveClient(cfg.base.client);
   const baseDb = resolveBaseDatabaseName(cfg);
 

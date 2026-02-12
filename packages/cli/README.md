@@ -69,6 +69,7 @@ tenora seed:run:tenants
 - `make:migration:*` requires configured migrations directories.
 - `make:seed:*` and `seed:run*` require configured seed directories.
 - Template output defaults to nearest `package.json` module type unless overridden.
+- For global CLI installs, keep your DB driver in the target project (for example `pg`, `mysql2`, `mariadb`, `sqlite3`, or `mssql`).
 
 ## Relationship to other packages
 - Depends on `@tenora/core` for shared CLI + factory internals.
