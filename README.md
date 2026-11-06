@@ -72,6 +72,23 @@ Create local tarballs for all packages:
 npm run pack
 ```
 
+## Testing
+The tests run the built `tenora` binaries inside a throwaway project and check the results over a separate database connection, so a pass means the database really changed.
+
+```bash
+npm test
+```
+
+SQLite always runs. Postgres and MySQL run on temporary servers started from local `initdb`/`mysqld` binaries, on random ports, and never touch a database you already have.
+
+To test the newest Postgres, MySQL, MariaDB and SQL Server versions in Docker:
+
+```bash
+npm run test:docker
+```
+
+To test against a server of your own, set any of `TENORA_TEST_PG_URL`, `TENORA_TEST_MYSQL_URL`, `TENORA_TEST_MARIADB_URL` or `TENORA_TEST_MSSQL_URL` to an admin URL such as `postgres://postgres:password@127.0.0.1:5432`. A server that has neither a URL nor local binaries is skipped, and the run prints which ones were.
+
 ## Release workflow
 Tenora uses Changesets.
 
@@ -96,6 +113,7 @@ npm run release
 In CI, publish is triggered on `main` via GitHub Actions.
 
 ## Compatibility notes
+- All packages require Node.js 22.12 or newer.
 - `@tenora/multi-tenant` still exposes a `tenora` binary in the current release line for backwards compatibility.
 - New projects should install CLI from `@tenora/cli`.
 - When using globally installed `@tenora/cli`, install your database driver in each target project (for example `pg` for Postgres).

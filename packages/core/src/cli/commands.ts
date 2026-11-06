@@ -182,6 +182,28 @@ const addTenantCommands = (program: Command) => {
         await manager.destroyAll();
       }
     });
+
+  program
+    .command("drop:tenant <id>")
+    .option("-c, --config <path>", "config file", "tenora.config.js")
+    .option("--force", "confirm that the tenant's data should be permanently deleted")
+    .option("--allow-unregistered", "also drop a tenant that is missing from the registry")
+    .description("Permanently delete a tenant database, its user and its registry entry")
+    .action(async (id: string, opts: { config: string; force?: boolean; allowUnregistered?: boolean }) => {
+      if (!opts.force) {
+        console.error(`Tenora: this permanently deletes tenant "${id}". Re-run with --force to confirm.`);
+        process.exitCode = 1;
+        return;
+      }
+      const cfg = await loadCliConfig(opts.config);
+      const manager = createTenoraFactory(cfg);
+      try {
+        await manager.dropTenantDb(id, { allowUnregistered: opts.allowUnregistered });
+        console.log(`Tenant ${id}: dropped`);
+      } finally {
+        await manager.destroyAll();
+      }
+    });
 };
 
 const addTemplateCommands = (program: Command) => {

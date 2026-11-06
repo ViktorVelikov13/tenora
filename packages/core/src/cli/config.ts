@@ -20,8 +20,8 @@ export const loadCliConfig = async (configPath: string): Promise<CliConfig> => {
   let fullPath = path.isAbsolute(configPath)
     ? configPath
     : path.join(process.cwd(), configPath);
-  if (isDefault && !fs.existsSync(fullPath)) {
-    fullPath = resolveConfigPath();
+  if (isDefault && (process.env.TENORA_CONFIG || !fs.existsSync(fullPath))) {
+    fullPath = resolveConfigPath(process.env.TENORA_CONFIG);
   }
   const module = await loadConfigModuleAsync(fullPath);
   const cfg = unwrapConfig(module);

@@ -85,9 +85,17 @@ export interface TenantManager {
   getBase(): Knex;
   getTenant(tenantId: string, password?: string): Knex;
   createTenantDb(tenantId: string, password?: string): Promise<void>;
+  /** permanently deletes the tenant database, its user and its registry entry */
+  dropTenantDb(tenantId: string, options?: DropTenantOptions): Promise<void>;
+  /** closes the cached connection pool; the database itself is untouched */
   destroyTenant(tenantId: string): Promise<void>;
   destroyAll(): Promise<void>;
 }
+
+export type DropTenantOptions = {
+  /** also drop a tenant that is missing from the registry, such as a half-created one */
+  allowUnregistered?: boolean;
+};
 
 export type TenantResolverOptions<Req extends { [k: string]: any } = any> = {
   manager: TenantManager;

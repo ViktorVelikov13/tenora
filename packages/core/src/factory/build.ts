@@ -1,8 +1,13 @@
 import fs from "fs";
 import type { Knex } from "knex";
 import path from "path";
-import type { MultiTenantOptions, TenantManager } from "../types";
-import { ensureRegistryTable, upsertTenantInRegistry } from "../tenantRegistry";
+import type { DropTenantOptions, MultiTenantOptions, TenantManager } from "../types";
+import {
+  ensureRegistryTable,
+  listTenantsFromRegistry,
+  removeTenantFromRegistry,
+  upsertTenantInRegistry,
+} from "../tenantRegistry";
 import { resolveKnex } from "../runtime/resolveKnex";
 import {
   escapeMssqlIdent,
@@ -23,6 +28,20 @@ const defaultPool: Knex.PoolConfig = {
   acquireTimeoutMillis: 60_000,
   idleTimeoutMillis: 60_000,
 };
+
+const SYSTEM_DATABASES = [
+  "postgres",
+  "template0",
+  "template1",
+  "mysql",
+  "information_schema",
+  "performance_schema",
+  "sys",
+  "master",
+  "model",
+  "msdb",
+  "tempdb",
+];
 
 export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager => {
   const knex = resolveKnex();
@@ -137,16 +156,40 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
     return path.isAbsolute(name) ? name : path.join(baseDir, name);
   };
 
+  const resolveTenantDatabase = (tenantId: string): string =>
+    isSqliteClient(client)
+      ? resolveSqliteTenantFilename(tenantId)
+      : resolveTenantDatabaseName(tenantId);
+
+  const resolveTenantUserName = (tenantId: string): string =>
+    `${tenant.userPrefix ?? "user_"}${tenantId}`;
+
+  const resolveAdminDatabase = (): string =>
+    base.adminDatabase ??
+    (isPostgresClient(client)
+      ? "postgres"
+      : isMysqlClient(client)
+        ? "mysql"
+        : isMssqlClient(client)
+          ? "master"
+          : resolveBaseDatabaseName());
+
+  const isProtectedDatabase = (database: string): boolean => {
+    if (isSqliteClient(client)) {
+      return path.resolve(database) === path.resolve(resolveBaseDatabaseName());
+    }
+    return [resolveBaseDatabaseName(), resolveAdminDatabase(), ...SYSTEM_DATABASES].some(
+      (name) => name.toLowerCase() === database.toLowerCase()
+    );
+  };
+
   const buildTenantConfig = (tenantId: string, password?: string): Knex.Config => {
     const tenantPassword = normalizePassword(password ?? basePassword);
     const hasTenantPassword = password !== undefined && password !== null;
-    const tenantDb = isSqliteClient(client)
-      ? resolveSqliteTenantFilename(tenantId)
-      : resolveTenantDatabaseName(tenantId);
-    const connection = buildBaseConnection(tenantDb) as Record<string, unknown>;
+    const connection = buildBaseConnection(resolveTenantDatabase(tenantId)) as Record<string, unknown>;
 
     if (!isSqliteClient(client) && hasTenantPassword) {
-      connection.user = `${tenant.userPrefix ?? "user_"}${tenantId}`;
+      connection.user = resolveTenantUserName(tenantId);
       if (tenantPassword !== undefined) {
         connection.password = tenantPassword;
       } else {
@@ -206,64 +249,67 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
         }
       }
     } else {
-      const adminDb =
-        base.adminDatabase ??
-        (isPostgresClient(client)
-          ? "postgres"
-          : isMysqlClient(client)
-            ? "mysql"
-            : isMssqlClient(client)
-              ? "master"
-              : resolveBaseDatabaseName());
+      const tenantDb = resolveTenantDatabaseName(tenantId);
       const admin = knex({
         ...baseKnexConfig,
-        connection: buildBaseConnection(adminDb),
+        connection: buildBaseConnection(resolveAdminDatabase()),
       });
 
       try {
         if (isPostgresClient(client)) {
-          const result = await admin.raw(`SELECT 1 FROM pg_database WHERE datname = ?`, [tenantId]);
+          const result = await admin.raw(`SELECT 1 FROM pg_database WHERE datname = ?`, [tenantDb]);
           if (result?.rows?.length) {
-            throw new Error(`Database "${tenantId}" already exists`);
+            throw new Error(`Database "${tenantDb}" already exists`);
           }
 
-          const safeDb = escapePgIdent(tenantId);
+          const safeDb = escapePgIdent(tenantDb);
           await admin.raw(`CREATE DATABASE "${safeDb}"`);
 
           if (tenantPassword && hasTenantPassword) {
-            const userName = `${tenant.userPrefix ?? "user_"}${tenantId}`;
+            const userName = resolveTenantUserName(tenantId);
             const safeUser = escapePgIdent(userName);
             const safePwd = escapeSqlString(tenantPassword);
             await admin.raw(`CREATE USER "${safeUser}" WITH PASSWORD '${safePwd}'`);
             await admin.raw(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
+
+            // Since Postgres 15 only the database owner can create objects in the public schema.
+            const tenantAdmin = knex({
+              ...baseKnexConfig,
+              connection: buildBaseConnection(tenantDb),
+            });
+            try {
+              await tenantAdmin.raw(`GRANT ALL ON SCHEMA public TO "${safeUser}"`);
+            } finally {
+              await tenantAdmin.destroy();
+            }
           }
         } else if (isMysqlClient(client)) {
           const result = await admin.raw(
             `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?`,
-            [tenantId]
+            [tenantDb]
           );
           if (result?.[0]?.length) {
-            throw new Error(`Database "${tenantId}" already exists`);
+            throw new Error(`Database "${tenantDb}" already exists`);
           }
 
-          const safeDb = escapeMysqlIdent(tenantId);
+          const safeDb = escapeMysqlIdent(tenantDb);
           await admin.raw(`CREATE DATABASE \`${safeDb}\``);
 
           if (tenantPassword && hasTenantPassword) {
-            const userName = `${tenant.userPrefix ?? "user_"}${tenantId}`;
+            const userName = resolveTenantUserName(tenantId);
             const safeUser = escapeSqlString(userName);
             const safePwd = escapeSqlString(tenantPassword);
             await admin.raw(`CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY '${safePwd}'`);
             await admin.raw(`GRANT ALL PRIVILEGES ON \`${safeDb}\`.* TO '${safeUser}'@'%'`);
           }
         } else if (isMssqlClient(client)) {
-          const safeDb = escapeMssqlIdent(tenantId);
+          const safeDb = escapeMssqlIdent(tenantDb);
           await admin.raw(
-            `IF DB_ID(N'${escapeSqlString(tenantId)}') IS NULL CREATE DATABASE [${safeDb}]`
+            `IF DB_ID(N'${escapeSqlString(tenantDb)}') IS NULL CREATE DATABASE [${safeDb}]`
           );
 
           if (tenantPassword && hasTenantPassword) {
-            const userName = `${tenant.userPrefix ?? "user_"}${tenantId}`;
+            const userName = resolveTenantUserName(tenantId);
             const safeUser = escapeMssqlIdent(userName);
             const safePwd = escapeSqlString(tenantPassword);
             await admin.raw(
@@ -272,7 +318,7 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
 
             const tenantAdmin = knex({
               ...baseKnexConfig,
-              connection: buildBaseConnection(tenantId),
+              connection: buildBaseConnection(tenantDb),
             });
             try {
               await tenantAdmin.raw(
@@ -309,10 +355,68 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
     await upsertTenantInRegistry(baseClient, resolved, tenantId, password);
   };
 
+  const dropTenantDb = async (tenantId: string, options: DropTenantOptions = {}) => {
+    const tenantDb = resolveTenantDatabase(tenantId);
+    if (isProtectedDatabase(tenantDb)) {
+      throw new Error(`Tenora: refusing to drop protected database "${tenantDb}".`);
+    }
+
+    const tenants = await listTenantsFromRegistry(baseClient, resolved);
+    if (!options.allowUnregistered && !tenants.some((record) => record.id === tenantId)) {
+      throw new Error(
+        `Tenora: tenant "${tenantId}" is not in the registry, so nothing was dropped.`
+      );
+    }
+
+    await destroyTenant(tenantId);
+
+    if (isSqliteClient(client)) {
+      if (tenantDb !== ":memory:") {
+        for (const file of [tenantDb, `${tenantDb}-wal`, `${tenantDb}-shm`]) {
+          fs.rmSync(file, { force: true });
+        }
+      }
+    } else {
+      const userName = resolveTenantUserName(tenantId);
+      const admin = knex({
+        ...baseKnexConfig,
+        connection: buildBaseConnection(resolveAdminDatabase()),
+      });
+
+      try {
+        if (isPostgresClient(client)) {
+          await admin.raw(`DROP DATABASE IF EXISTS "${escapePgIdent(tenantDb)}" WITH (FORCE)`);
+          await admin.raw(`DROP ROLE IF EXISTS "${escapePgIdent(userName)}"`);
+        } else if (isMysqlClient(client)) {
+          await admin.raw(`DROP DATABASE IF EXISTS \`${escapeMysqlIdent(tenantDb)}\``);
+          await admin.raw(`DROP USER IF EXISTS '${escapeSqlString(userName)}'@'%'`);
+        } else if (isMssqlClient(client)) {
+          const safeDb = escapeMssqlIdent(tenantDb);
+          await admin.raw(
+            `IF DB_ID(N'${escapeSqlString(tenantDb)}') IS NOT NULL BEGIN ALTER DATABASE [${safeDb}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [${safeDb}]; END`
+          );
+          await admin.raw(
+            `IF SUSER_ID(N'${escapeSqlString(userName)}') IS NOT NULL DROP LOGIN [${escapeMssqlIdent(userName)}]`
+          );
+        } else {
+          throw new Error(
+            `Tenora: dropTenantDb is only supported for Postgres, MySQL/MariaDB, SQLite, and SQL Server clients (got "${client}").`
+          );
+        }
+      } finally {
+        await admin.destroy();
+      }
+    }
+
+    // Last, so a failed drop keeps the tenant listed and can simply be retried.
+    await removeTenantFromRegistry(baseClient, resolved, tenantId);
+  };
+
   return {
     getBase: () => baseClient,
     getTenant,
     createTenantDb,
+    dropTenantDb,
     destroyTenant,
     destroyAll,
   };

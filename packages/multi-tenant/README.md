@@ -11,7 +11,7 @@ A framework-agnostic multi-tenant toolkit for Node.js (Knex + Objection). Tenora
 ## Installation
 ```bash
 npm install @tenora/multi-tenant
-# install the DB driver you use (for example: pg, mysql2, mariadb, sqlite3, mssql)
+# install the DB driver you use: pg, mysql2, mariadb, sqlite3, better-sqlite3, or tedious for SQL Server
 ```
 
 ## Core concepts
@@ -60,6 +60,7 @@ For new projects, prefer installing `@tenora/cli` (standalone package).
 Commands:
 - `tenora migrate` (alias `migrate:base`) / `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants` / `tenora rollback:tenants`
+- `tenora drop:tenant <id> --force`
 - `tenora make:migration <name>` (alias `make:migration:base`) / `tenora make:migration:tenants <name>`
 - `tenora make:seed <name>` (alias `make:seed:base`) / `tenora make:seed:tenants <name>`
 - `tenora seed:run` (alias `seed:run:base`) / `tenora seed:run:tenants`
@@ -67,6 +68,8 @@ Commands:
 
 Options:
 - `--create-base`: create the base database (from `base.database`) if it does not exist.
+- `--force`: required by `drop:tenant`, which permanently deletes the tenant.
+- `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry.
 
 Notes:
 - `make:migration:*` requires the corresponding `migrationsDir`.
@@ -83,7 +86,7 @@ Set `base.client` to the Knex client you want (e.g., `"pg"`, `"mysql2"`, `"maria
 same client for tenant connections. Use `base.connection` when the driver needs non-standard fields (e.g., `server` for SQL Server
 or `filename` for SQLite).
 
-`createTenantDb` and `--create-base` support **Postgres**, **MySQL/MariaDB**, **SQLite**, and **SQL Server**. For other drivers,
+`createTenantDb`, `dropTenantDb` and `--create-base` support **Postgres**, **MySQL/MariaDB**, **SQLite**, and **SQL Server**. For other drivers,
 provision the base and tenant databases externally and Tenora will connect to them.
 
 ### CLI config (tenora.config.js by default)
@@ -140,10 +143,16 @@ If you rename the table or columns in the generated migration, update `registry`
 If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypted_password`; otherwise it stores the plain password in `password`.
 
 ## API surface
-- `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, destroyTenant, destroyAll }`
+- `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, dropTenantDb, destroyTenant, destroyAll }`
 - `createTenoraFactoryAsync(options)` → same, but can load `.mjs`/`.ts` config files via default lookup
   - `options.base`: base connection (any Knex client) + optional migrations/seeds dirs
   - `options.tenant`: migrationsDir, seedsDir, userPrefix (defaults to `user_`), pool/ssl overrides, SQLite db path options
+- `dropTenantDb(tenantId, { allowUnregistered? })` permanently deletes the tenant database, its user and its registry entry
+  - Open connections to the tenant database are closed first
+  - Rejects tenants missing from the registry, so a mistyped ID cannot delete an unrelated database; pass `allowUnregistered: true` to clear a half-created tenant
+  - Always refuses the base database and system databases
+  - Do not call it with a tenant ID taken directly from a request
+- `destroyTenant(tenantId)` only closes the cached connection pool; the database itself is untouched
 - `createTenantResolver({ manager, tenantId, passwordProvider?, authorizer?, attach? })`
   - Returns async `(req) => { tenantId?, knex? }`
   - Default attaches `req.tenantId` and `req.knex`; customize via `attach`
@@ -155,7 +164,8 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 3) **Store creds**: save encrypted tenant DB password in your base DB.
 4) **Request flow**: middleware runs `createTenantResolver` → attaches `req.knex` for Objection queries.
 5) **Migrate**: use CLI to keep base and tenant schemas in sync.
-6) **Shutdown/cleanup**: call `destroyTenant(id)` or `destroyAll()` to close pools.
+6) **Offboard**: `dropTenantDb(id)` or `tenora drop:tenant <id> --force` when a tenant leaves.
+7) **Shutdown/cleanup**: call `destroyTenant(id)` or `destroyAll()` to close pools.
 
 ## Security notes
 - Use per-tenant DB users with strong passwords (generate + encrypt).
@@ -164,7 +174,7 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 - Rotate tenant passwords by recreating the DB user and updating stored (encrypted) password.
 
 ## Troubleshooting
-- **“database already exists”**: your registry may have stale tenants; drop or pick a new ID.
+- **“database already exists”**: a previous `createTenantDb` may have failed partway, leaving a tenant that is not in the registry. Remove it with `tenora drop:tenant <id> --force --allow-unregistered`, or pick a new ID.
 - **“password authentication failed”**: ensure `passwordProvider` returns the plain password for that tenant.
 - **Migrations not running**: verify `tenant.migrationsDir` is correct and reachable from where you invoke the CLI.
 - **Pooling issues**: adjust `tenant.pool` or `base.pool` in the factory options.

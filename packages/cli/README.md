@@ -28,6 +28,7 @@ npx tenora list
 - `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants`
 - `tenora rollback:tenants`
+- `tenora drop:tenant <id> --force`
 - `tenora make:migration <name>` (alias `make:migration:base`)
 - `tenora make:migration:tenants <name>`
 - `tenora make:seed <name>` (alias `make:seed:base`)
@@ -40,6 +41,8 @@ npx tenora list
 - `-c, --config <path>`: explicit config file path.
 - `--create-base`: create the base DB if it does not exist.
 - `--esm` / `--cjs`: template module format override for `make:migration*` and `make:seed*`.
+- `--force`: required by `drop:tenant`, which permanently deletes the tenant database, its user and its registry entry.
+- `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry, such as one left behind by a failed create.
 
 ## Config lookup
 If `--config` is not set, CLI checks this order from current working directory:
@@ -62,6 +65,9 @@ tenora make:migration:tenants add_status_to_invoices
 
 # Run tenant seeds
 tenora seed:run:tenants
+
+# Permanently delete a tenant
+tenora drop:tenant acme --force
 ```
 
 ## Notes
@@ -69,7 +75,8 @@ tenora seed:run:tenants
 - `make:migration:*` requires configured migrations directories.
 - `make:seed:*` and `seed:run*` require configured seed directories.
 - Template output defaults to nearest `package.json` module type unless overridden.
-- For global CLI installs, keep your DB driver in the target project (for example `pg`, `mysql2`, `mariadb`, `sqlite3`, or `mssql`).
+- `drop:tenant` refuses tenants missing from the registry unless `--allow-unregistered` is set, and always refuses the base database and system databases.
+- For global CLI installs, keep your DB driver in the target project (for example `pg`, `mysql2`, `mariadb`, `sqlite3`, or `tedious` for SQL Server).
 
 ## Relationship to other packages
 - Depends on `@tenora/core` for shared CLI + factory internals.
