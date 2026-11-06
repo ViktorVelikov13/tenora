@@ -9,9 +9,17 @@
     "pack": "npm -w @tenora/core pack && npm -w @tenora/multi-tenant pack && npm -w @tenora/cli pack",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "changeset publish"
+    "release": "changeset publish",
+    "test": "npm run build && node tests/run.mjs",
+    "test:docker": "npm run build && node tests/run.mjs --docker"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.1"
+    "@changesets/cli": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "mariadb": "^3.5.4",
+    "mysql2": "^3.24.6",
+    "pg": "^8.23.1",
+    "sqlite3": "^6.0.1",
+    "tedious": "^20.3.8"
   }
 }
