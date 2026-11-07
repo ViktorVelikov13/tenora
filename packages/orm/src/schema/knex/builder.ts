@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { compileRaw } from "../../compile";
 import type { Connection } from "../../connection";
 import { RawSql, sql } from "../../sql";
@@ -49,9 +50,13 @@ type Operation =
  * writes on each database, so tenants migrated before and after the upgrade get the same schema.
  *
  * Calls chain as in Knex (`schema.createTable(…).createTable(…)`), and awaiting the builder runs them in order. Every
- * call returns a new builder, so two separate calls on one `schema` never run each other's changes.
+ * call returns a new builder, so two separate calls on one `schema` never run each other's changes. Like
+ * `SchemaChange`, a builder runs in the async context it was created in, so one returned from a `transaction()`
+ * callback runs in that transaction.
  */
 export class KnexSchemaBuilder implements PromiseLike<void> {
+  readonly #context = AsyncLocalStorage.snapshot();
+
   /** @internal */
   constructor(
     private readonly connection: Connection,
@@ -152,6 +157,6 @@ export class KnexSchemaBuilder implements PromiseLike<void> {
     onfulfilled?: ((value: void) => T | PromiseLike<T>) | null,
     onrejected?: ((reason: unknown) => E | PromiseLike<E>) | null
   ): Promise<T | E> {
-    return this.#run().then(onfulfilled, onrejected);
+    return this.#context(() => this.#run()).then(onfulfilled, onrejected);
   }
 }

@@ -367,3 +367,468 @@ describe("compiling the Laravel-style schema builder", () => {
     assert.throws(() => schema.table("t", (t) => t.foreign("x").references("id")).toSql(), /needs on\(table\)/);
   });
 });
+
+// Real databases -----------------------------------------------------------------------------------------------------
+
+const DIALECT = { "better-sqlite3": "sqlite", postgres: "postgres", mysql: "mysql", mariadb: "mariadb", mssql: "mssql" };
+const ORM_CLIENT = { postgres: "pg", mysql: "mysql2", mariadb: "mariadb", mssql: "mssql" };
+
+const serverConfig = (engine, database) => {
+  const { host, port, user, password } = engine.server;
+  return {
+    client: ORM_CLIENT[engine.id],
+    connection:
+      engine.id === "mssql"
+        ? { server: host, port, user, password, database, options: { encrypt: false, trustServerCertificate: true } }
+        : { host, port, user, password, database },
+    pool: { max: 4, acquireTimeoutMillis: 5_000 },
+  };
+};
+
+const rejects = async (promise, kind) => {
+  const error = await Promise.resolve(promise).then(
+    () => undefined,
+    (e) => e
+  );
+  assert.ok(error, "expected the statement to fail");
+  if (kind) {
+    assert.ok(error instanceof QueryError, `expected a QueryError, got ${error}`);
+    assert.equal(error.kind, kind);
+  }
+  return error;
+};
+
+/** The parts of the catalog the upgrade's schema proof compares: columns, indexes and keys. */
+const CATALOG = {
+  sqlite: async (db) => {
+    const tables = await db.raw(sql`select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' order by name`);
+    const out = {};
+    for (const { name } of tables) {
+      out[name] = {
+        columns: await db.raw(sql`select name, type, "notnull", dflt_value, pk from pragma_table_xinfo(${name})`),
+        indexes: await db.raw(
+          sql`select l.name as name, l."unique" as is_unique, l.origin as origin, group_concat(i.name) as columns from pragma_index_list(${name}) as l, pragma_index_info(l.name) as i group by l.name order by l.name`
+        ),
+        foreignKeys: await db.raw(
+          sql`select "table", "from", "to", on_update, on_delete from pragma_foreign_key_list(${name}) order by "from"`
+        ),
+      };
+    }
+    return out;
+  },
+  postgres: async (db) => ({
+    columns: await db.raw(
+      sql`select table_name, column_name, data_type, character_maximum_length, numeric_precision, numeric_scale, is_nullable, column_default from information_schema.columns where table_schema = current_schema() order by table_name, ordinal_position`
+    ),
+    indexes: await db.raw(sql`select tablename, indexname, indexdef from pg_indexes where schemaname = current_schema() order by tablename, indexname`),
+    constraints: await db.raw(
+      sql`select c.conrelid::regclass::text as table_name, c.conname as name, pg_get_constraintdef(c.oid) as definition from pg_constraint as c join pg_namespace as n on n.oid = c.connamespace where n.nspname = current_schema() order by 1, 2`
+    ),
+  }),
+  mysql: async (db) => ({
+    columns: await db.raw(
+      sql`select table_name as t, column_name as c, column_type as type, is_nullable as nullable, column_default as dflt, extra, collation_name as collation from information_schema.columns where table_schema = database() order by table_name, ordinal_position`
+    ),
+    indexes: await db.raw(
+      sql`select table_name as t, index_name as name, non_unique, seq_in_index as seq, column_name as c from information_schema.statistics where table_schema = database() order by table_name, index_name, seq_in_index`
+    ),
+    foreignKeys: await db.raw(
+      sql`select k.table_name as t, k.constraint_name as name, k.column_name as c, k.referenced_table_name as rt, k.referenced_column_name as rc, r.update_rule as on_update, r.delete_rule as on_delete from information_schema.key_column_usage as k join information_schema.referential_constraints as r on r.constraint_schema = k.constraint_schema and r.constraint_name = k.constraint_name where k.table_schema = database() order by k.table_name, k.constraint_name, k.ordinal_position`
+    ),
+  }),
+  mssql: async (db) => ({
+    columns: await db.raw(
+      sql`select t.name as t, c.name as c, ty.name as type, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, d.name as default_name, d.definition as default_definition from sys.columns as c join sys.tables as t on t.object_id = c.object_id join sys.types as ty on ty.user_type_id = c.user_type_id left join sys.default_constraints as d on d.object_id = c.default_object_id order by t.name, c.column_id`
+    ),
+    // A primary key declared inline gets a name SQL Server makes up, so it is compared without one.
+    indexes: await db.raw(
+      sql`select t.name as t, case when i.is_primary_key = 1 then null else i.name end as name, i.is_unique, i.is_primary_key, i.filter_definition, string_agg(c.name, ',') within group (order by ic.key_ordinal) as columns from sys.indexes as i join sys.tables as t on t.object_id = i.object_id join sys.index_columns as ic on ic.object_id = i.object_id and ic.index_id = i.index_id join sys.columns as c on c.object_id = ic.object_id and c.column_id = ic.column_id group by t.name, i.name, i.is_unique, i.is_primary_key, i.filter_definition order by t.name, i.is_primary_key, i.name`
+    ),
+    foreignKeys: await db.raw(
+      sql`select f.name, object_name(f.parent_object_id) as t, object_name(f.referenced_object_id) as rt, f.delete_referential_action_desc as on_delete, f.update_referential_action_desc as on_update from sys.foreign_keys as f order by f.name`
+    ),
+  }),
+};
+CATALOG.mariadb = CATALOG.mysql;
+
+// A 0.x migration history, run through Knex on one database and through the compatible builder on another.
+const createShop = (schema) =>
+  schema
+    .createTable("customers", (t) => {
+      t.increments("id").primary();
+      t.string("name").notNullable();
+      t.string("email").unique();
+    })
+    .createTable("orders", (t) => {
+      t.increments("id").primary();
+      t.integer("customer_id").unsigned().notNullable().references("id").inTable("customers").onDelete("CASCADE");
+      t.decimal("total", 12, 2).notNullable().defaultTo(0);
+      t.string("status").defaultTo("new");
+      t.boolean("paid").defaultTo(false);
+      t.timestamps(true, true);
+      t.index(["status"]);
+    });
+
+const addNote = (schema) =>
+  schema.alterTable("orders", (t) => {
+    t.string("note");
+    t.renameColumn("status", "state");
+  });
+
+const reworkOrders = (schema) =>
+  schema
+    .alterTable("orders", (t) => {
+      t.string("note", 500).notNullable().defaultTo("").alter();
+    })
+    .alterTable("orders", (t) => {
+      t.dropForeign("customer_id");
+      t.dropColumn("paid");
+    })
+    .alterTable("orders", (t) => {
+      t.foreign("customer_id").references("customers.id").onDelete("CASCADE");
+    });
+
+const dropShop = (schema) =>
+  schema
+    .alterTable("orders", (t) => {
+      t.dropIndex(["status"]);
+      t.dropForeign("customer_id");
+    })
+    .alterTable("customers", (t) => {
+      t.dropUnique("email");
+    })
+    .renameTable("orders", "purchases")
+    .dropTable("purchases")
+    .dropTableIfExists("customers");
+
+describe("schema changes against a real database", () => {
+  for (const engine of loadEngines()) {
+    const skip = engine.skip || (engine.id === "sqlite3" ? "the sqlite3 driver is dropped in 1.0" : false);
+    describe(engine.label, { skip }, () => {
+      const isSqlite = engine.id === "better-sqlite3";
+      const dialect = DIALECT[engine.id];
+      const suffix = randomBytes(3).toString("hex");
+      const databases = { tenora: `tenora_schema_${suffix}`, knex: `tenora_schema_${suffix}_k` };
+      const sqliteDir = isSqlite ? fs.mkdtempSync(path.join(os.tmpdir(), "tenora-schema-")) : undefined;
+      const sqliteFile = (name) => path.join(sqliteDir, `${name}.sqlite`);
+      let admin;
+      let db;
+      const open = [];
+
+      /** A Tenora connection to one of the test databases. */
+      const connect = (database) => {
+        const connection = isSqlite
+          ? createConnection({
+              client: "better-sqlite3",
+              connection: { filename: sqliteFile(database) },
+              pool: { acquireTimeoutMillis: 5_000 },
+            })
+          : createConnection(serverConfig(engine, database));
+        open.push(connection);
+        return connection;
+      };
+
+      before(async () => {
+        if (!isSqlite) {
+          admin = knex(engine.knexConfig(engine.adminDatabase));
+          for (const name of Object.values(databases)) await engine.createDatabase(admin, name);
+        }
+        db = connect(databases.tenora);
+      });
+
+      after(async () => {
+        for (const connection of open) await connection.destroy();
+        if (admin) {
+          await engine.cleanup(admin, { databases: Object.values(databases), users: [] });
+          await admin.destroy();
+        }
+        if (sqliteDir) fs.rmSync(sqliteDir, { recursive: true, force: true });
+      });
+
+      const dropAll = async (...tables) => {
+        for (const table of tables) await db.schema.dropIfExists(table);
+      };
+
+      it("creates tables whose defaults, keys and checks hold", async () => {
+        try {
+          await db.schema.create("teams", (t) => {
+            t.id();
+            t.string("name").unique();
+          });
+          await db.schema.create("members", (t) => {
+            t.id();
+            t.string("email").unique();
+            t.foreignId("team_id").constrained().cascadeOnDelete();
+            t.boolean("active").default(true);
+            t.decimal("balance", 10, 2).default(0);
+            t.enum("role", ["admin", "member"]).default("member");
+            t.json("meta").nullable();
+            t.uuid("token").nullable();
+            t.timestamps();
+            t.softDeletes();
+          });
+          const team = await db.table("teams").insertGetId({ name: "red" });
+          await db.table("members").insert({ email: "ada@x", team_id: team });
+          const ada = await db.table("members").first();
+          assert.equal(Number(ada.active), 1);
+          assert.equal(Number(ada.balance), 0);
+          assert.equal(ada.role, "member");
+          assert.equal(ada.created_at, null);
+          assert.equal(ada.deleted_at, null);
+
+          await rejects(db.table("members").insert({ email: "ada@x", team_id: team }), "unique_violation");
+          await rejects(db.table("members").insert({ email: "bob@x", team_id: team + 1000 }), "foreign_key_violation");
+          await rejects(db.table("members").insert({ email: "cy@x", team_id: team, role: "boss" }));
+
+          await db.table("teams").where("id", team).delete();
+          assert.equal(await db.table("members").count(), 0, "the delete cascaded");
+        } finally {
+          await dropAll("members", "teams");
+        }
+      });
+
+      it("adds, changes, renames and drops columns, keeping the rows", async () => {
+        try {
+          await db.schema.create("notes", (t) => {
+            t.id();
+            t.string("title", 20);
+            t.integer("views").default(0);
+            t.string("code").nullable();
+            t.timestamps();
+          });
+          await db.table("notes").insert([
+            { title: "one", code: null },
+            { title: "two", code: "b" },
+          ]);
+
+          await db.schema.table("notes", (t) => {
+            t.string("summary", 100).nullable().index();
+            t.string("title", 200).change();
+            t.integer("views").nullable().change();
+            t.renameColumn("code", "slug");
+          });
+          await db.table("notes").insert({ title: "x".repeat(150), views: null, summary: "s" });
+          assert.deepEqual(await db.table("notes").orderBy("id").pluck("slug"), [null, "b", null]);
+          await rejects(db.table("notes").insert({ title: null }), "not_null_violation");
+
+          await db.schema.table("notes", (t) => {
+            t.dropColumn("views");
+            t.dropIndex(["summary"]);
+          });
+          await db.schema.table("notes", (t) => t.dropColumn(["summary", "created_at"]));
+          const [first] = await db.table("notes").orderBy("id").limit(1);
+          assert.deepEqual(Object.keys(first).sort(), ["id", "slug", "title", "updated_at"]);
+          assert.deepEqual(await db.table("notes").orderBy("id").pluck("title"), ["one", "two", "x".repeat(150)]);
+
+          await db.schema.rename("notes", "memos");
+          assert.equal(await db.table("memos").count(), 3);
+        } finally {
+          await dropAll("notes", "memos");
+        }
+      });
+
+      it("adds and drops foreign, unique and primary keys on existing tables", async () => {
+        try {
+          await db.schema.create("authors", (t) => {
+            t.id();
+            t.string("name");
+          });
+          await db.schema.create("books", (t) => {
+            t.id();
+            t.string("isbn", 20);
+            t.foreignId("author_id").nullable();
+          });
+          await db.schema.create("tags", (t) => {
+            t.string("name", 50);
+          });
+          const author = await db.table("authors").insertGetId({ name: "ada" });
+          await db.table("books").insert([
+            { isbn: "1", author_id: author },
+            { isbn: "2", author_id: null },
+          ]);
+          await db.table("tags").insert({ name: "a" });
+
+          await db.schema.table("books", (t) => {
+            t.foreign("author_id").references("id").on("authors").cascadeOnDelete();
+            t.unique("isbn");
+          });
+          await rejects(db.table("books").insert({ isbn: "3", author_id: author + 1000 }), "foreign_key_violation");
+          await rejects(db.table("books").insert({ isbn: "1" }), "unique_violation");
+          await db.table("authors").where("id", author).delete();
+          assert.deepEqual(await db.table("books").pluck("isbn"), ["2"]);
+
+          await db.schema.table("books", (t) => {
+            t.dropForeign(["author_id"]);
+            t.dropUnique(["isbn"]);
+          });
+          await db.table("books").insert({ isbn: "2", author_id: 999 });
+          assert.equal(await db.table("books").count(), 2);
+
+          await db.schema.table("tags", (t) => {
+            t.string("name", 50).change();
+            t.primary("name");
+          });
+          await rejects(db.table("tags").insert({ name: "a" }), "unique_violation");
+          await db.schema.table("tags", (t) => t.dropPrimary());
+          await db.table("tags").insert({ name: "a" });
+          assert.equal(await db.table("tags").count(), 2);
+        } finally {
+          await dropAll("books", "authors", "tags");
+        }
+      });
+
+      it("runs a change returned from a transaction callback in that transaction", async () => {
+        try {
+          await db.transaction(() => db.schema.create("inside", (t) => t.id()));
+          await db.transaction(() => db.schema.knex.createTable("inside_knex", (t) => t.increments()));
+          assert.equal(await db.table("inside").count(), 0);
+          assert.equal(await db.table("inside_knex").count(), 0);
+          // MySQL and MariaDB commit DDL implicitly, so only the others can roll a CREATE TABLE back.
+          if (dialect !== "mysql" && dialect !== "mariadb") {
+            await rejects(
+              db.transaction(async () => {
+                await db.schema.create("rolled_back", (t) => t.id());
+                throw new Error("roll back");
+              })
+            );
+            await rejects(db.table("rolled_back").count());
+          }
+        } finally {
+          await dropAll("inside", "inside_knex", "rolled_back");
+        }
+      });
+
+      it("builds the same schema and data as Knex from a converted migration", async () => {
+        const kx = knex(engine.knexConfig(isSqlite ? sqliteFile(databases.knex) : databases.knex));
+        const other = connect(databases.knex);
+        const seed = async (connection) => {
+          await connection.table("customers").insert({ name: "ada", email: "ada@x" });
+          await connection.table("orders").insert({ customer_id: 1, total: 12.5, status: "new" });
+        };
+        const rows = (connection) =>
+          connection.table("orders").select("id", "customer_id", "total", "state", "note").orderBy("id");
+        try {
+          // Knex's schema builder collects every call made on it, so each step takes a new one, as migrations did.
+          for (const [schema, connection] of [
+            [() => kx.schema, other],
+            [() => db.schema.knex, db],
+          ]) {
+            await createShop(schema());
+            await seed(connection);
+            await addNote(schema());
+            await connection.table("orders").update({ note: "" });
+            await reworkOrders(schema());
+          }
+          const catalog = await CATALOG[dialect](db);
+          assert.match(JSON.stringify(catalog), /"note".*"state"|"state".*"note"/, "the catalog lists the columns");
+          assert.deepEqual(catalog, await CATALOG[dialect](other));
+          assert.deepEqual(await rows(db), await rows(other));
+          assert.equal((await rows(db))[0].state, "new");
+          await rejects(db.table("orders").insert({ customer_id: 99, total: 1 }), "foreign_key_violation");
+
+          await dropShop(kx.schema);
+          await dropShop(db.schema.knex);
+          assert.deepEqual(await CATALOG[dialect](db), await CATALOG[dialect](other));
+        } finally {
+          await kx.destroy();
+          await db.schema.knex.dropTableIfExists("purchases").dropTableIfExists("orders").dropTableIfExists("customers");
+        }
+      });
+
+      if (isSqlite) {
+        describe("table rebuilds", () => {
+          const setUp = async () => {
+            await db.schema.create("parents", (t) => {
+              t.id();
+              t.string("name");
+            });
+            await db.schema.create("children", (t) => {
+              t.id();
+              t.foreignId("parent_id").constrained().cascadeOnDelete();
+              t.string("label").index();
+              t.integer("score");
+            });
+            await db.raw(
+              sql`create trigger children_count after insert on children begin update parents set name = name || '+' where id = new.parent_id; end`
+            );
+            await db.table("parents").insert([{ name: "a" }, { name: "b" }]);
+            await db.table("children").insert([
+              { parent_id: 1, label: "x", score: 1 },
+              { parent_id: 2, label: "y", score: 2 },
+            ]);
+          };
+          const indexes = async (table) =>
+            (await db.raw(sql`select name from pragma_index_list(${table}) order by name`)).map((row) => row.name);
+          const columns = async (table) =>
+            (await db.raw(sql`select name, type, "notnull" from pragma_table_info(${table})`)).map((column) => [
+              column.name,
+              column.type,
+              column.notnull,
+            ]);
+
+          afterEach(() => dropAll("orphans", "children", "parents"));
+
+          it("changes a column's type and nullability, keeping rows, indexes, keys and triggers", async () => {
+            await setUp();
+            await db.schema.table("children", (t) => {
+              t.string("score", 10).change();
+              t.string("label").nullable().change();
+            });
+            // As in Laravel, a changed column is what the new definition says: score is not nullable any more.
+            assert.deepEqual(await columns("children"), [
+              ["id", "INTEGER", 1],
+              ["parent_id", "INTEGER", 1],
+              ["label", "varchar", 0],
+              ["score", "varchar", 1],
+            ]);
+            assert.deepEqual(await indexes("children"), ["children_label_index"]);
+            assert.deepEqual(await db.table("children").orderBy("id").pluck("score"), ["1", "2"]);
+            await db.table("children").insert({ parent_id: 1, label: null, score: "3" });
+            assert.equal(await db.table("parents").where("id", 1).value("name"), "a++", "the trigger survived");
+            await rejects(db.table("children").insert({ parent_id: 99, score: "4" }), "foreign_key_violation");
+          });
+
+          it("drops an indexed column", async () => {
+            await setUp();
+            await db.schema.table("children", (t) => t.dropColumn("label"));
+            assert.deepEqual(await indexes("children"), []);
+            assert.deepEqual(await db.table("children").orderBy("id").pluck("score"), [1, 2]);
+          });
+
+          it("rebuilds a referenced table without cascading into the tables that reference it", async () => {
+            await setUp();
+            await db.schema.table("parents", (t) => t.string("name", 50).nullable().change());
+            assert.equal(await db.table("children").count(), 2);
+            await rejects(db.table("children").insert({ parent_id: 99, label: "z", score: 3 }), "foreign_key_violation");
+            await db.table("parents").where("id", 1).delete();
+            assert.equal(await db.table("children").count(), 1, "the cascade still works");
+          });
+
+          it("refuses to rebuild a referenced table inside a transaction, unless foreign keys are off", async () => {
+            await setUp();
+            const error = await rejects(db.transaction(() => db.schema.table("parents", (t) => t.text("name").change())));
+            assert.match(error.message, /reference it/);
+            await db.transaction(() => db.schema.table("children", (t) => t.text("label").change()));
+            await db.schema.withoutForeignKeyConstraints(() =>
+              db.transaction(() => db.schema.table("parents", (t) => t.text("name").change()))
+            );
+            assert.equal(await db.table("children").count(), 2);
+            assert.deepEqual(await db.raw(sql`pragma foreign_keys`), [{ foreign_keys: 1 }]);
+          });
+
+          it("checks foreign keys before it commits", async () => {
+            await setUp();
+            await db.schema.create("orphans", (t) => {
+              t.id();
+              t.bigInteger("parent_id");
+            });
+            await db.table("orphans").insert({ parent_id: 99 });
+            const error = await rejects(db.schema.table("orphans", (t) => t.foreign("parent_id").references("id").on("parents")));
+            assert.match(error.message, /foreign key/);
+            assert.deepEqual(await db.raw(sql`select * from pragma_foreign_key_list('orphans')`), [], "nothing changed");
+          });
+        });
+      }
+    });
+  }
+});

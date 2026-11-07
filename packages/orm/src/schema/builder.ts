@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { CompiledQuery } from "../compile";
 import { compileSchema } from "../compileSchema";
 import type { Connection } from "../connection";
@@ -10,8 +11,13 @@ import { suspendForeignKeys } from "./sqlite";
 /**
  * A schema change, run when awaited. `toSql()` shows its statements without running them; a SQLite change that
  * rebuilds the table reads the table first, so it shows as a comment.
+ *
+ * It runs in the async context it was created in, so a change returned unawaited from a `transaction()` callback
+ * (`transaction(() => db.schema.create(…))`, as a migration's `up` does) still runs in that transaction: `await` calls
+ * `then()` only after the callback has returned.
  */
 export class SchemaChange implements PromiseLike<void> {
+  readonly #context = AsyncLocalStorage.snapshot();
   #steps: SchemaStep[] | undefined;
 
   /** @internal */
@@ -33,9 +39,10 @@ export class SchemaChange implements PromiseLike<void> {
     onfulfilled?: ((value: void) => T | PromiseLike<T>) | null,
     onrejected?: ((reason: unknown) => E | PromiseLike<E>) | null
   ): Promise<T | E> {
-    return Promise.resolve()
-      .then(() => runSteps(runnerFor(this.connection), this.#compiled()))
-      .then(onfulfilled, onrejected);
+    return this.#context(() => Promise.resolve().then(() => runSteps(runnerFor(this.connection), this.#compiled()))).then(
+      onfulfilled,
+      onrejected
+    );
   }
 }
 
