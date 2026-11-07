@@ -1,6 +1,7 @@
 # Tenora ORM: plan for 1.0
 
-Status: proposal, nothing built yet. The research behind it, with sources, is in [research.md](research.md).
+Status: proposal, nothing built yet; the open decisions were settled on 2026-11-07 (see [Decisions](#decisions)).
+The research behind it, with sources, is in [research.md](research.md).
 
 ## Summary
 
@@ -25,8 +26,10 @@ await transaction(async () => {
 });
 ```
 
-The 0.x line keeps getting fixes for a defined window, and a `tenora upgrade` command moves existing databases (the
-base and every tenant) from Knex's migration bookkeeping to Tenora's own `tenora_migrations` table.
+The 0.x line keeps getting fixes for a defined window. A `tenora upgrade` command moves existing projects over: it
+copies the migration history of the base and every tenant from Knex's bookkeeping to Tenora's own `tenora_migrations`
+table, converts Knex migration and seed files to Tenora's format (proving they build the same schema), and converts
+Objection models and the code that calls them.
 
 ## What 0.x depends on today
 
@@ -60,8 +63,10 @@ Goals:
    silently using another database.
 4. No Knex or Objection in any package's dependencies, and Tenora's own migration bookkeeping. One engine for the ORM,
    the CLI, provisioning and migrations.
-5. Every database 0.x supports: Postgres, MySQL, MariaDB, SQLite, SQL Server.
-6. A tested, reversible upgrade from 0.x, and a maintained 0.x line while people move.
+5. Every database 0.x supports, all in 1.0: Postgres, MySQL, MariaDB, SQLite, SQL Server.
+6. A tested, reversible upgrade from 0.x that converts the project's code as well as its databases, and a maintained 0.x
+   line while people move.
+7. Node 24.15 or newer.
 
 Non-goals for 1.0: a Unit of Work or identity map (MikroORM style), transactions spanning two databases, polymorphic
 relations, model factories, generating models from the database (all but the second are planned for 1.x, see
@@ -75,6 +80,7 @@ packages/
   core/           @tenora/core          provisioning, registry, schema dumps, CLI modules, now on @tenora/orm
   multi-tenant/   @tenora/multi-tenant  runtime: factory, tenant context, middleware; re-exports @tenora/orm
   cli/            @tenora/cli           the tenora binary, plus `tenora upgrade`
+  upgrade/        @tenora/upgrade       new: migration, seed and model converters and the schema proof, used by `tenora upgrade`
 ```
 
 This puts the ORM *underneath* the tenancy packages, not on top of `@tenora/multi-tenant`, because core needs the same
@@ -86,12 +92,12 @@ by name, a model asks a **connection resolver** for `"base"` or `"tenant"`, and 
 resolver that knows the current tenant. This keeps the dependency direction one way (`orm ← core ← multi-tenant, cli`),
 lets core use the same engine for provisioning and migrations, and keeps the ORM testable on its own.
 
-Users install `@tenora/multi-tenant` (which brings the ORM) and their driver. `@tenora/orm` joins the Changesets `fixed`
-group, so all four packages release together as 1.0.0.
+Users install `@tenora/multi-tenant` (which brings the ORM) and their driver, and `@tenora/upgrade` as a dev dependency
+only while they upgrade. The new packages join the Changesets `fixed` group, so all five release together as 1.0.0.
 
 ## The engine
 
-**Recommendation: a hybrid.** Tenora owns everything users see and everything that decides correctness: the query
+**Decision: a hybrid.** Tenora owns everything users see and everything that decides correctness: the query
 builder API, the dialect rules, connections, pools, transactions, the migrator and the models. **Kysely is used only to
 turn a query into SQL text and parameters**, through its documented compile-only mode (`Kysely<any>` with a
 `DummyDriver`, then `.compile()`), never to run queries. This is the split MikroORM 7 and ZenStack 3 use today.
@@ -104,8 +110,18 @@ And Kysely compiles whatever it is asked to, per dialect, without refusing SQL a
 Server, `RETURNING` on MySQL), so the dialect decisions are Tenora's under any option. Details in
 [research.md](research.md#6-build-or-wrap).
 
-Checked before recommending it: Kysely 0.29.8 type-checks under the repo's TypeScript 7.0.2 with `skipLibCheck` off, and
-compiles queries and DDL for Postgres, MySQL, SQL Server and SQLite with no database.
+Checked locally: Kysely 0.29.8 type-checks under the repo's TypeScript 7.0.2 with `skipLibCheck` off, and
+compiles queries and DDL for Postgres, MySQL, SQL Server and SQLite with no database. MariaDB uses the MySQL compiler,
+which needs nothing else, since quoting and placeholders are the same. A second check compiled the syntax that only some
+databases have, for all five: upserts (`ON CONFLICT`, `ON DUPLICATE KEY UPDATE … VALUES()`, `MERGE … OUTPUT`),
+`RETURNING` on MariaDB, `OUTPUT` and `TOP` on SQL Server, `FOR UPDATE SKIP LOCKED`, JSON paths, and per-dialect DDL
+(`IDENTITY`, `AUTO_INCREMENT`, `MODIFY COLUMN`, `ALTER COLUMN`). Two constructs came out in the wrong order and are
+written by Tenora's dialect layer as `sql` templates instead: MySQL's row-alias upsert (`VALUES (…) AS new ON DUPLICATE
+KEY UPDATE …`) and SQL Server table hints (`FROM users AS u WITH (UPDLOCK)`).
+
+So the engine supports every database Tenora supports today. Our own SQL compiler is the fallback, written only for a
+construct a dialect needs that neither Kysely nor a `sql` template inside the dialect layer can produce; the `compile()`
+boundary below lets that replace Kysely one dialect at a time.
 
 Containing the dependency:
 
@@ -125,7 +141,7 @@ Layers, bottom up:
 | Query builder | Tenora | fluent Eloquent-style builder: `where*`, joins, aggregates, grouping, locking (`forUpdate`, `skipLocked`), `upsert`, `insertGetId`, unions, subqueries, `sql` tagged fragments |
 | Dialect rules | Tenora | per dialect: paging (`LIMIT/OFFSET`, `OFFSET…FETCH`), `RETURNING` vs `OUTPUT` vs `insertId`, upsert flavour (`ON CONFLICT`, `ON DUPLICATE KEY`, `MERGE`), JSON paths, boolean and date codecs, MariaDB differences, SQLite table rebuild |
 | SQL compilation | Kysely, behind `compile()` | identifiers, placeholders, statement text for queries and DDL |
-| Schema builder | Tenora | Laravel-style blueprint (`t.id()`, `t.string()`, `t.foreignId().constrained()`, `t.timestamps()`), compiled through the same module |
+| Schema builder | Tenora | Laravel-style blueprint (`t.id()`, `t.string()`, `t.foreignId().constrained()`, `t.timestamps()`), plus a Knex-compatible blueprint for converted migrations; catalog introspection for the schema proof; compiled through the same module |
 | Migrator and seeder | Tenora | `tenora_migrations`, batches, locks, `.ts`/`.js`/`.sql` migrations, schema dumps |
 | ORM | Tenora | models, attributes, casts, relations, eager loading, scopes, events, soft deletes, serialization, pagination |
 
@@ -133,7 +149,8 @@ Driver decisions:
 
 - **`sqlite3` is dropped.** It is deprecated and its repository archived. SQLite projects switch to `better-sqlite3`
   (same database files, nothing to convert), and `tenora upgrade` reports a `client: "sqlite3"` config.
-- **`node:sqlite`** (built into Node) is supported from Node 24.15, where it is a release candidate without a warning.
+- **`node:sqlite`** (built into Node) is supported too: Node 24.15.0 marked it a release candidate
+  ([#61262](https://github.com/nodejs/node/pull/61262)), which is one reason 1.0 requires Node 24.15.
 - Dates and booleans are encoded by Tenora for SQLite: `better-sqlite3` throws on them, and `node:sqlite` silently
   stores a `Date` as `NULL`.
 - **`mariadb`**: big integers and ids come back as `BigInt`, decimals as strings; the adapter normalizes them, and resets
@@ -399,7 +416,77 @@ export default migration({
 
 ### Existing Knex migration and seed files
 
-They cannot run without Knex. The plan is to **baseline them, not to translate them**:
+They cannot run without Knex, so `tenora upgrade` **converts them to Tenora's format**, and keeps a converted file only
+once it has proved that the converted files build the same schema as the originals.
+
+Conversion stays mechanical because converted files use a **Knex-compatible blueprint**: `migration({ compat: "knex", … })`
+gives the schema callbacks Knex's method names with Knex's semantics, generated by the same schema engine as everything
+else. `increments` is `serial` on Postgres and `int unsigned auto_increment` on MySQL, `string` defaults to 255,
+`timestamps()` without arguments is two `datetime` columns, and indexes and constraints are named as Knex names them
+(`users_email_unique`, `users_team_id_foreign`). New migrations use the default, Laravel-style blueprint, where `id()`
+is a `bigint` and `timestamps()` follows Laravel. A converted file keeps its calls almost unchanged, so the diff is easy
+to review:
+
+```js
+// before: migrations/tenants/20250101120000_create_orders.js (Knex)
+exports.up = (knex) =>
+  knex.schema.createTable("orders", (t) => {
+    t.increments("id").primary();
+    t.integer("customer_id").unsigned().notNullable().references("id").inTable("customers").onDelete("CASCADE");
+    t.decimal("total", 12, 2).notNullable().defaultTo(0);
+    t.timestamps(true, true);
+  });
+exports.down = (knex) => knex.schema.dropTableIfExists("orders");
+
+// after: the same file, converted by tenora upgrade
+const { migration } = require("@tenora/orm");
+
+module.exports = migration({
+  compat: "knex",
+  up: ({ schema }) =>
+    schema.createTable("orders", (t) => {
+      t.increments("id").primary();
+      t.integer("customer_id").unsigned().notNullable().references("id").inTable("customers").onDelete("CASCADE");
+      t.decimal("total", 12, 2).notNullable().defaultTo(0);
+      t.timestamps(true, true);
+    }),
+  down: ({ schema }) => schema.dropTableIfExists("orders"),
+});
+```
+
+What the converter handles:
+
+- Every export style (`exports.up`, `export const up`, `export async function up`, `module.exports = { up, down }`), in
+  JavaScript and TypeScript, keeping the file's module format, name and comments.
+- `knex.schema.*` (`createTable`, `alterTable`/`table`, `dropTable(IfExists)`, `renameTable`, `hasTable`, `hasColumn`,
+  `raw`) and the column and index builder chains.
+- Data changes inside migrations: `knex.raw(sql, bindings)` → `db.raw(…)`, `knex("users")…` → `db.table("users")…` for
+  the builder methods both have (`where*`, `insert`, `update`, `del`, `select`, `first`, `pluck`, `orderBy`, …), and
+  `knex.fn.now()` → `db.fn.now()`.
+- Seed files (`exports.seed = async (knex) => …`), the same way.
+
+What it leaves alone, with the file, line and reason in the report: code that branches on the dialect
+(`knex.client.config.client`), helpers imported from other files, dynamic method names, promise chains it cannot follow,
+transactions opened inside a migration, and Knex APIs with no equivalent. Those files stay Knex files (see the end of
+this section).
+
+**The proof.** The converter is not trusted on its own, because a silent difference between old and new tenants is the
+one outcome that must not happen. Before writing anything, the command builds the schema twice in throwaway databases
+on the project's database server, the way `schema:dump:tenants` does: once by running the original files through Knex
+(which a 0.x project has installed), once by running the converted files through Tenora. It compares the two through the
+database catalog (tables, column types, nullability, defaults, primary keys, indexes, unique and foreign keys, checks)
+after every migration has run, and again after every rollback step, so the `down` functions are checked too. Seeds run
+on both sides and the data is compared. At the first difference it stops, names the migration and prints the
+difference; files are replaced only when both sides match. Comparing through catalog queries rather than dump tools
+means it works on all five databases, SQL Server included, and needs no `pg_dump` or `mysqldump`.
+
+The history does not change. A converted file keeps its name, so `tenora_migrations` already lists it and existing
+databases do not run it again. (`tenora_migrations` stores names without the extension, so a later rename from `.js` to
+`.ts` does not look like a new migration.)
+
+**Baselining** is still worth doing for a project with many migrations, because a new tenant then loads one dump instead
+of running every file. It is also the way out for files the converter left alone, except on SQL Server, which has no
+dumps:
 
 1. Still on 0.x, run every migration everywhere (`tenora migrate`, `tenora migrate:tenants`).
 2. Still on 0.x, write schema dumps and prune: `tenora schema:dump:tenants --prune` and the new
@@ -407,8 +494,7 @@ They cannot run without Knex. The plan is to **baseline them, not to translate t
    The dump is the baseline: new databases load it, existing ones already have it.
 3. Upgrade to 1.0 and run `tenora upgrade` (below), which records the pruned migrations as run on every database.
 
-After that, the project's history starts at the dump, and new migrations use the new format. What this costs: rolling
-back into the pruned history is not possible, exactly as with `--prune` today.
+Rolling back into the pruned history is not possible, exactly as with `--prune` today.
 
 Pruning the base needs one change in 0.x first. `ensureRegistryMigration` (`core/src/tenantRegistry.ts`) decides
 whether to generate the registry migration by looking for the `tenora:registry` marker in the migration files. Once the
@@ -416,28 +502,29 @@ base is pruned, that file is gone, so the next `tenora migrate` would generate i
 `tenora_tenants` table. Before `schema:dump:base --prune` ships, the check also has to accept the registry migration
 being in the dump or in the database's history. The 1.0 migrator makes the same check against `tenora_migrations`.
 
-Where a dump is not possible, mainly **SQL Server** (it has no schema dumps), or for a project that wants to keep its old
-files runnable for a while, 1.0 can run legacy Knex migration files **if the user installs `knex` themselves**: the
-migrator recognises a file that exports `up(knex)` and calls it directly (not through Knex's migrator) with a Knex
-instance on the same database, in a Knex transaction of its own, then records it in `tenora_migrations`. `knex` becomes an optional peer dependency used for nothing else, and the legacy
-runner is removed in 2.0. Translating Knex schema code into the blueprint format with a codemod is rejected: two schema
-builders produce different DDL for the same call (`increments` vs `id`, default lengths, index names), and a silent
-difference between old and new tenants is worse than a visible baseline.
-
-Seeds are not history, so they are not baselined: existing Knex seed files run through the same optional legacy runner
-until the user rewrites them, and `tenora upgrade` lists them.
+**What is left** after converting and baselining (unusual code on SQL Server, or files a team prefers to rewrite by hand
+later) still runs. The 1.0 migrator recognises a file that exports `up(knex)` and, **if the user installs `knex`
+themselves**, calls it directly (not through Knex's migrator) with a Knex instance on the same database, in a Knex
+transaction of its own, then records it in `tenora_migrations`. Seed files the converter left alone run the same way.
+`knex` is an optional peer dependency used for nothing else, and this legacy runner is removed in 2.0.
 
 ## The upgrade command
 
-"Migrating existing connections" covers three things. `tenora upgrade` does the first two and reports on the third:
+"Migrating existing connections" covers four things, and `tenora upgrade` handles all of them:
 
 | What | `tenora upgrade` |
 | --- | --- |
 | **Databases**: base and every tenant have Knex bookkeeping (`knex_migrations`, `knex_migrations_lock`) | copies it into `tenora_migrations` |
+| **Migration and seed files**: Knex code | converts them after proving they build the same schema; leaves the rest as legacy files |
 | **Config**: `tenora.config.js` has Knex-shaped options (`knexOptions`, Knex pool and connection types, `client: "sqlite3"`) | 1.0 still reads the 0.x shape, with deprecation warnings; `--write-config` rewrites it |
-| **Application code**: Objection models, `Model.query(req.knex)`, `req.knex` | does not rewrite it; prints every place with file and line |
+| **Application code**: Objection models, `Model.query(req.knex)`, `req.knex`, `trx` arguments | converts the common patterns; marks and lists the rest |
 
-Steps, each idempotent, with `--dry-run` printing what would change:
+The code converters live in a separate package, `@tenora/upgrade`, so the runtime and the CLI do not carry a JavaScript
+parser. `tenora upgrade` loads it, and asks for it to be added as a dev dependency when it is missing.
+
+Steps, each idempotent, with `--dry-run` printing what would change. `--only databases|migrations|code` runs one part.
+The steps that change files need a clean git working tree and write only with `--write`, so the result is a diff to
+review:
 
 1. **Preflight** (read-only; also shipped to 0.x as `tenora upgrade --check`): load the config; connect to the base;
    list the registry; connect to every tenant (which also checks that the passwords decrypt); check that no database
@@ -451,22 +538,53 @@ Steps, each idempotent, with `--dry-run` printing what would change:
    tables are left untouched, not used, so 0.x still works against the same databases if the user downgrades.
 3. **Schema dumps**: rewrites each dump so it creates and fills `tenora_migrations` instead of `knex_migrations`
    (the schema SQL itself is unchanged).
-4. **Report**: legacy migration and seed files still on disk, Objection imports, `Model.query(…knex…)`, `req.knex`,
-   `getTenant(...)` used as a Knex instance, Knex-only config keys. Each with file, line and what to change.
-5. **Cleanup**, later and separately: `tenora upgrade --drop-legacy-tables` drops `knex_migrations*` everywhere once the
+4. **Migration and seed files**: convert, prove, write (see
+   [Existing Knex migration and seed files](#existing-knex-migration-and-seed-files)).
+5. **Models and code**: convert Objection models and their call sites (see
+   [Converting Objection models](#converting-objection-models)); for TypeScript projects, type-check the result.
+6. **Report**: everything left: legacy migration and seed files, `TODO(tenora-upgrade)` markers, type errors, Objection
+   validation (`jsonSchema`) that no longer runs, `getTenant(...)` used as a Knex instance, Knex-only config keys. Each
+   with file, line and what to change.
+7. **Cleanup**, later and separately: `tenora upgrade --drop-legacy-tables` drops `knex_migrations*` everywhere once the
    user no longer needs a downgrade.
 
 The registry table, its columns and the encrypted password format do not change, so nothing else in the databases needs
 converting.
 
+### Converting Objection models
+
+`tenora upgrade` converts model classes and the code that queries them, under the same rules as the migration converter:
+`--dry-run` shows the diff, files change only with `--write`, and everything it does not convert gets a
+`// TODO(tenora-upgrade): …` comment and a report entry.
+
+| Objection | Tenora |
+| --- | --- |
+| `class Person extends Model` from `objection` | `extends Model` from `@tenora/orm`, with `static connection = "tenant"`, or `"base"` for a model the codemod sees queried through `getBase()` |
+| `static tableName`, `static idColumn` | `static table`, `static primaryKey` |
+| `relationMappings` with `HasManyRelation`, `HasOneRelation`, `BelongsToOneRelation`, `ManyToManyRelation` (`through`), `HasOneThroughRelation` | relation methods, with the keys read from `join.from` and `join.to` |
+| `jsonSchema` | `casts` for the types it implies (`boolean`, `integer`, `object`/`array` → `json`); the validation itself is reported, because Tenora does not validate |
+| `modifiers` | scopes |
+| `$beforeInsert`, `$beforeUpdate`, `$afterInsert`, `$afterFind`, … | `creating`, `updating`, `created`, `retrieved`, … events |
+| `virtualAttributes` | `appends` |
+| `Person.query(req.knex)`, `Person.query(trx)` | `Person.query()`: the tenant comes from the context, the transaction from `transaction()` |
+| `Person.transaction(knex, async (trx) => …)`, `transaction(Person, Animal, …)` | `transaction(async () => …)`, with the `trx` arguments inside removed |
+| `.findById(id)`, `.insert(obj)`, `.patch(obj)`, `.deleteById(id)` | `find(id)`, `create(obj)`, `update(obj)`, `destroy(id)` |
+| `.withGraphFetched("[pets, children.pets]")` | `.with("pets", "children.pets")` |
+| `person.$relatedQuery("pets")` | `person.pets()` |
+| `insertGraph`, `upsertGraph`, `$formatJson`, `$parseDatabaseJson`, custom query builder classes | not converted; marked and reported |
+
+Model definitions convert almost completely for these patterns. Call sites are harder, because a codemod sees syntax,
+not types: it converts what it can identify as an Objection call and marks the rest. For TypeScript projects the
+command ends with a type-check of the converted project and lists the errors with the TODOs; the project's own tests are
+the final check. There is no schema-style proof for application code, and the plan does not pretend there is.
+
 ### Incremental adoption
 
-A large application cannot rewrite every Objection model in one release. 1.0 ships `@tenora/multi-tenant/knex`, a
-subpath that needs `knex` installed by the user and returns a Knex instance for a tenant from the same config
-(`tenora.tenant(id).knex()`), so old Objection models and new Tenora models can run side by side while code moves over.
-They use different connections, so one transaction does not cover both; the docs say so. This bridge is removed in 2.0
-along with the legacy migration runner. A best-effort Objection → Tenora model codemod (`tableName`, `idColumn`,
-`relationMappings`, `jsonSchema` → casts, `$beforeInsert` → events, `modifiers` → scopes) is a 1.x item.
+Not every model converts in one go. 1.0 ships `@tenora/multi-tenant/knex`, a subpath that needs `knex` installed by the
+user and returns a Knex instance for a tenant from the same config (`tenora.tenant(id).knex()`), so the Objection models
+that are left and the converted Tenora models run side by side while the rest moves over. They use different connections,
+so one transaction does not cover both; the docs say so. This bridge is removed in 2.0, along with the legacy migration
+runner.
 
 ## Keeping 0.x maintained
 
@@ -475,10 +593,12 @@ along with the legacy migration runner. A best-effort Objection → Tenora model
 2. Cut **`release/0.x`** from `main` at the 0.4.0 tag. On that branch, set Changesets' `baseBranch` to `release/0.x`,
    and add the branch to the release workflow, publishing with `changeset publish --tag v0`. Without the tag, a 0.x
    patch published after 1.0 would become `latest`.
-3. `development` becomes the 1.0 line. 1.0 prereleases use Changesets pre mode (`changeset pre enter next`) and publish
-   `1.0.0-next.N` under the `next` dist-tag.
-4. A 0.5.0 minor adds what helps people prepare: `schema:dump:base`, `tenora upgrade --check`.
-5. Proposed support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development`
+3. `development` becomes the 1.0 line. Only then do its `engines` move to `"node": ">=24.15.0"` and CI add Node 26
+   next to 24; changing them earlier would drop Node 22 from 0.4.0, which is still released from `development`. 1.0
+   prereleases use Changesets pre mode (`changeset pre enter next`) and publish `1.0.0-next.N` under the `next` dist-tag.
+4. A 0.5.0 minor adds what helps people prepare: `schema:dump:base`, the registry check that survives pruning, and
+   `tenora upgrade --check`.
+5. Support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development`
    no longer has the Knex code, most 0.x fixes touch code that exists only on `release/0.x`, so fixes are made there,
    in PRs against `release/0.x`, and carried forward to `development` by hand when the same problem exists in 1.0. The
    README gets a "Which version" table; at end of life, `npm deprecate` marks the 0.x range with a pointer to the
@@ -496,41 +616,54 @@ Each phase ends with something releasable as a prerelease and tested on all five
 | 1. Engine | `@tenora/orm`: driver adapters, pools, connections and transactions (savepoints, queueing, verified commits, after-commit, retries), the `compile()` module with snapshot tests, query builder and dialect rules, `sql` fragments | `db.table()` CRUD, joins, aggregates, upserts and every transaction rule pass on all five databases |
 | 2. Schema and migrator; core on the engine | blueprint schema builder with the SQLite rebuild, migrator on `tenora_migrations`, seeder, schema dumps; provisioning, registry and every CLI command ported; Knex removed from `core` and `cli` | the existing CLI and lifecycle tests pass with Knex not installed |
 | 3. Models | attributes, casts, fillable, timestamps, dirty tracking, CRUD, events and observers, scopes, soft deletes, serialization, strict mode; hasOne, hasMany, belongsTo, belongsToMany, hasManyThrough; eager loading, `withCount`, `whereHas`; pagination and chunking; type design measured and frozen | model test suite passes on all five databases |
-| 4. Tenancy | tenant context, connection resolver, `createTenora`, middleware, `tenant(id).run()`, idle pool eviction, cross-connection write warnings, `@tenora/multi-tenant/knex` bridge, legacy Knex file runner | a sample app with base and tenant models runs without passing connections around |
-| 5. Upgrade | `tenora upgrade` (preflight, bookkeeping, dumps, report, `--write-config`, `--drop-legacy-tables`), upgrade guide | a 0.4 fixture project with tenants on every database upgrades, and still works on 0.x afterwards |
-| 6. Release | `1.0.0-next.N` prereleases, docs, dogfooding on a real app, then 1.0.0 | — |
-| Later (1.x) | polymorphic relations, model factories and test helpers (a rolled-back transaction per test), Objection model codemod, tenant-aware queued jobs, streaming `cursor()`, read replicas, query logging hooks, typed models generated from the schema dump | — |
+| 4. Tenancy | tenant context, connection resolver, `createTenora`, middleware, `tenant(id).run()`, idle pool eviction, cross-connection write warnings, `@tenora/multi-tenant/knex` bridge | a sample app with base and tenant models runs without passing connections around |
+| 5. Upgrade: databases | `tenora upgrade` preflight, bookkeeping, dumps, `--write-config`, `--drop-legacy-tables`; the legacy Knex file runner; schema introspection through the catalog on all five databases | a 0.4 fixture project with tenants on every database upgrades, and still works on 0.x afterwards |
+| 6. Upgrade: code | `@tenora/upgrade`: the Knex-compatible blueprint, migration and seed converter with the schema proof, Objection model and call-site converter, report, upgrade guide | the fixture project's migrations and seeds convert and prove equal on all five databases; its models convert and its tests pass |
+| 7. Release | `1.0.0-next.N` prereleases, docs, dogfooding on a real app, then 1.0.0 | — |
+| Later (1.x) | polymorphic relations, model factories and test helpers (a rolled-back transaction per test), tenant-aware queued jobs, streaming `cursor()`, read replicas, query logging hooks, typed models generated from the schema | — |
 
-Phases 1 and 2 are most of the work. Phase 3 can start as soon as phase 1's builder is stable, in parallel with phase 2.
+Phases 1 and 2 are most of the work. Phase 3 can start as soon as phase 1's builder is stable, in parallel with phase 2,
+and phase 6 can start once phase 2's schema builder exists. SQL Server is part of every phase from the first, not a
+follow-up.
 
 ## Risks
 
 - **Size.** Even with Kysely compiling the SQL, the dialect rules, connection layer, schema builder and migrator are
-  several thousand lines before any model code. Mitigations: a strict 1.0 scope and the existing real-database harness.
-  If SQL Server is what holds 1.0 back, it ships in 1.1 while SQL Server users stay on 0.x.
+  several thousand lines before any model code, and the upgrade converters add their own. Mitigations: a strict 1.0
+  scope and the existing real-database harness. SQL Server ships in 1.0, so its driver (one request per connection,
+  typed parameters, named transactions) and dialect rules are on the critical path from phase 1.
 - **Kysely changes.** It is 0.x, kept by two maintainers, and has broken things in minor and patch releases. Mitigations:
   one internal module, an exact pin, snapshot tests per dialect, and the option to replace it with our own compiler.
 - **`AsyncLocalStorage` surprises**: context lost in some callback-based libraries, or carried into fire-and-forget work
   that outlives a transaction. Mitigations: everything also works with explicit `on()`/`using()`; work that runs after a
   transaction ended gets `TransactionClosedError`, not a write outside it. Overhead is small (about 10% of raw HTTP
   throughput on Node 22 and 7% on Node 24 in Platformatic's benchmark), and one context object is used, not several.
-- **Different DDL from the new schema builder** than Knex produced for the same intent. Affects only new migrations;
-  existing tables are untouched by the baseline approach.
+- **Different DDL between old and new tenants.** Converted migrations use the Knex-compatible blueprint, and are only
+  written once the schema proof shows both sides match. New migrations in the default blueprint follow Laravel's
+  conventions, which is intended.
+- **Codemod coverage.** Objection call sites vary more than model definitions, and a codemod sees syntax, not types.
+  Mitigations: mark and report rather than guess, type-check the result, and keep the Knex bridge until 2.0 for what is
+  left.
 - **Two release lines** double the CI and backport work for the support window.
 - **Type complexity**: inferring column and relation names must not make TypeScript 7 slow on large model sets; the type
   design is prototyped and measured before it is frozen.
 
-## Decisions needed
+## Decisions
 
-1. **What "migrate the existing connections" should cover.** Proposed: databases and config, plus a report on
-   application code (above). Should `tenora upgrade` also rewrite Objection models in 1.0, rather than in 1.x?
-2. **The engine**: the hybrid (recommended), or our own SQL compiler as well (about 10–14k more lines, no dependency).
-3. **Layering**: the ORM as the engine underneath core and the tenancy packages (recommended, see [Packages](#packages)),
-   or literally on top of `@tenora/multi-tenant`, with core keeping a separate low-level database layer.
-4. **Optional Knex for legacy migrations and the side-by-side bridge** until 2.0, or none at all (then baselining is
-   required, and SQL Server users rewrite their migrations).
-5. **SQL Server in 1.0**, or in 1.1.
-6. **Node version for 1.0**: proposed Node 24.15 or newer. Node 22 reaches end of life on 2027-04-30, around when 1.0
-   would ship, and 24.15 is where `node:sqlite` stops being experimental.
-7. **0.x support window**: 6 months of fixes and 12 of security fixes, or longer.
-8. **Version**: 1.0.0 for all packages (recommended), rather than another 0.x minor.
+Settled on 2026-11-07:
+
+1. **`tenora upgrade` converts application code in 1.0**: Objection models and their call sites, as well as the
+   databases and the config ([Converting Objection models](#converting-objection-models)).
+2. **Engine**: the hybrid. Kysely compiles for all five databases, which was checked for the syntax that only some of
+   them have; Tenora writes its own compiler only for a construct a dialect needs that neither Kysely nor a `sql`
+   template can produce ([The engine](#the-engine)).
+3. **Layering**: the ORM is the engine underneath core and the tenancy packages; users get it through
+   `@tenora/multi-tenant` ([Packages](#packages)).
+4. **Knex migration and seed files are converted to Tenora's format**, with the schema proof. Optional Knex stays until
+   2.0, only for files the converter cannot handle and for the side-by-side bridge
+   ([Existing Knex migration and seed files](#existing-knex-migration-and-seed-files)).
+5. **SQL Server ships in 1.0.**
+6. **Node 24.15 or newer** for 1.0. `engines` changes on `development` once `release/0.x` is cut
+   ([Keeping 0.x maintained](#keeping-0x-maintained)).
+7. **0.x support**: bug fixes for 6 months and security fixes for 12 months after 1.0.0.
+8. **All packages release as 1.0.0.**

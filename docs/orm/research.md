@@ -314,6 +314,25 @@ mssql  select "id", "email" from "users" where "team_id" in (@1, @2) … order b
 sqlite select "id", "email" from "users" where "team_id" in (?, ?) … order by "id" limit ? offset ?
 ```
 
+A second local check compiled the syntax only some databases have, through the same cold instances (MariaDB through the
+MySQL compiler). All of it compiled correctly except two constructs, which Tenora's dialect layer writes as `sql`
+templates instead:
+
+| Construct | Result |
+| --- | --- |
+| `ON CONFLICT … DO UPDATE … RETURNING` (Postgres, SQLite) | correct |
+| `ON DUPLICATE KEY UPDATE name = VALUES(name)` (MariaDB) | correct |
+| `INSERT … RETURNING` (MariaDB, through the MySQL compiler) | correct |
+| `INSERT … OUTPUT inserted.id`, `MERGE … WHEN MATCHED … OUTPUT`, `SELECT TOP(5)` (SQL Server) | correct |
+| `FOR UPDATE SKIP LOCKED` (Postgres, MySQL) | correct |
+| JSON paths: `->>` (Postgres), `->>'$."key"'` (MySQL, SQLite), `json_value` (SQL Server, via `sql`) | correct |
+| DDL: `IDENTITY` and `BIT` (SQL Server), `MODIFY COLUMN` (MySQL), `ALTER COLUMN` (SQL Server), `ADD COLUMN` (SQLite) | correct |
+| MySQL row-alias upsert `VALUES (…) AS new ON DUPLICATE KEY UPDATE …` | `AS new` came out after the `ON DUPLICATE KEY` clause: invalid, write as a `sql` template |
+| SQL Server table hint `FROM users AS u WITH (UPDLOCK)` | the alias came out after the hint: invalid, write as a `sql` template |
+
+With `Kysely<any>`, SQL Server data types and JSON keys have to be passed as `sql` fragments, which is what a dialect
+layer generates anyway.
+
 ### What a dialect layer has to handle
 
 | | Postgres | MySQL 8 | MariaDB | SQLite | SQL Server |
@@ -376,4 +395,9 @@ Sources: [Kysely releases](https://github.com/kysely-org/kysely/releases), [0.29
 | `tedious` | 20.3.8 | none (others use `tarn`) | one request at a time per connection; transactions through its `beginTransaction`/`saveTransaction`/`rollbackTransaction` API ([docs](https://tediousjs.github.io/tedious/api-connection.html)) |
 | `better-sqlite3` | 13.0.3 | one synchronous connection | rejects booleans and `Date`; one long transaction blocks every other request on that file |
 | `sqlite3` | 6.0.1 | — | **deprecated and unmaintained; repository archived. Drop it.** |
-| `node:sqlite` | built in | — | experimental on Node 22; release candidate without the warning from Node 24.15 and 25.7; synchronous; rejects booleans and **silently stores a `Date` as `NULL`** ([docs](https://nodejs.org/api/sqlite.html)) |
+| `node:sqlite` | built in | — | experimental on Node 22; marked release candidate in Node 24.15.0 (2026-04-15, [#61262](https://github.com/nodejs/node/pull/61262), checked in the Node 24 changelog) and 25.7; synchronous; rejects booleans and **silently stores a `Date` as `NULL`** ([docs](https://nodejs.org/api/sqlite.html)) |
+
+Node release lines, from [nodejs.org/dist/index.json](https://nodejs.org/dist/index.json) and the
+[release schedule](https://github.com/nodejs/Release): Node 22 ends on 2027-04-30; Node 24 has been in maintenance since
+2026-10-20 and ends on 2028-04-30; Node 26 has been the active LTS since 2026-10-28 and ends on 2029-04-30. The latest
+releases are 22.23.4, 24.22.2 and 26.13.0.
