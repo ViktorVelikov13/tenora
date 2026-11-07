@@ -187,3 +187,136 @@ What happens, and why:
   `trx.run(fn)`, `trx.commit()`, `trx.rollback()`.
 
 On SQLite there is one connection, so a query outside an open transaction waits until it ends.
+
+## Schema
+
+`db.schema` creates and changes tables in the style of Laravel's schema builder. Awaiting a change runs it; `toSql()`
+shows its statements without running anything.
+
+```ts
+await db.schema.create("orders", (t) => {
+  t.id();                                                       // bigint auto-increment primary key
+  t.foreignId("customer_id").constrained().cascadeOnDelete();   // references customers(id)
+  t.decimal("total", 12, 2).default(0);
+  t.string("status", 20).default("new").index();
+  t.json("meta").nullable();
+  t.timestamps();
+  t.softDeletes();
+});
+
+await db.schema.table("orders", (t) => {
+  t.string("note").nullable();                // a new column
+  t.string("status", 40).change();            // a changed one: this definition replaces the old one
+  t.renameColumn("meta", "details");
+  t.dropColumn("deleted_at");
+  t.unique(["customer_id", "status"]);
+  t.dropForeign(["customer_id"]);             // by its columns, or by name: dropForeign("orders_customer_id_foreign")
+});
+
+await db.schema.rename("orders", "purchases");
+await db.schema.dropIfExists("purchases");    // also drop(table)
+```
+
+Columns: `id()`, `increments`, `bigIncrements`, `string(name, length = 255)`, `text`, `integer`, `unsignedInteger`,
+`bigInteger`, `unsignedBigInteger`, `smallInteger`, `boolean`, `decimal(name, precision = 8, scale = 2)`,
+`float(name, precision = 53)`, `double`, `date`, `dateTime`, `timestamp` and `time` (with a precision, 0 by default as
+in Laravel; pass 3 to keep milliseconds), `json`, `uuid`, `binary`, `enum(name, values)`, `foreignId(name)`,
+`timestamps()`, `softDeletes()`.
+
+Column modifiers: `nullable()`, `default(value)` (a value, or a `sql` fragment written as is), `useCurrent()`,
+`unsigned()` (MySQL and MariaDB only), `unique(name?)`, `index(name?)`, `primary()`, `change()`. A foreign id gets
+`.constrained(table?, column = "id")`, whose table defaults to the plural of the column name without `_id` (`team_id`
+→ `teams`; pass the table when the plural is irregular), then `cascadeOnDelete()`, `nullOnDelete()`,
+`restrictOnDelete()`, `noActionOnDelete()`, the same `…OnUpdate()` methods, or `onDelete(action)`.
+
+Table methods: `index(columns, name?)`, `unique(columns, name?)`, `primary(columns, name?)`,
+`foreign(columns, name?).references(column).on(table)`, `dropColumn(...columns)`, `renameColumn(from, to)`,
+`dropIndex`, `dropUnique`, `dropForeign` (each by name, or by columns), `dropPrimary()`, `dropConstrainedForeignId`,
+`dropTimestamps()`, `dropSoftDeletes()`.
+
+Keys and indexes are named as Laravel names them: `orders_status_index`, `users_email_unique`,
+`orders_customer_id_foreign`. A primary key is `users_pkey` on Postgres, as Postgres itself names it.
+
+| Method | Postgres | MySQL, MariaDB | SQLite | SQL Server |
+| --- | --- | --- | --- | --- |
+| `id()`, `bigIncrements` | `bigserial` | `bigint unsigned auto_increment` | `integer autoincrement` | `bigint identity` |
+| `increments` | `serial` | `int unsigned auto_increment` | `integer autoincrement` | `int identity` |
+| `string(n)` | `varchar(n)` | `varchar(n)` | `varchar` | `nvarchar(n)` |
+| `text` | `text` | `text` | `text` | `nvarchar(max)` |
+| `boolean` | `boolean` | `tinyint(1)` | `tinyint(1)` | `bit` |
+| `decimal(p, s)` | `decimal(p, s)` | `decimal(p, s)` | `numeric` | `decimal(p, s)` |
+| `dateTime(p)`, `timestamp(p)` | `timestamp(p) without time zone` | `datetime(p)`, `timestamp(p)` | `datetime` | `datetime2(p)` |
+| `json` | `json` | `json` | `text` | `nvarchar(max)` |
+| `uuid` | `uuid` | `char(36)` | `varchar` | `uniqueidentifier` |
+| `binary` | `bytea` | `blob` | `blob` | `varbinary(max)` |
+| `enum(values)` | `varchar(255)` with a check | `enum(…)` | `varchar` with a check | `nvarchar(255)` with a check |
+| `foreignId` | `bigint` | `bigint unsigned` | `integer` | `bigint` |
+
+`change()` works as in Laravel: the new definition replaces the old one, so a modifier you want to keep (`nullable()`,
+`default()`) has to be given again; the column's indexes and foreign keys stay. On SQL Server a default is a named
+constraint (`orders_status_default`), which `change()` and `dropColumn()` drop first.
+
+### SQLite table rebuilds
+
+SQLite alters little in place. Adding, renaming and dropping an unconstrained column run as they are; changing a
+column, dropping a column that a key or index uses, and adding or dropping a foreign or primary key rebuild the table,
+following [SQLite's 12 steps](https://www.sqlite.org/lang_altertable.html#otheralter): foreign key enforcement off
+before the transaction, a new table, the rows copied, the old table dropped and the new one renamed, its indexes and
+triggers created again, and the foreign keys checked before the commit. The definition comes from the table's pragmas
+and its CREATE TABLE text, and column definitions the change does not touch are kept as written. `toSql()` shows a
+rebuild as a comment, since it reads the table when it runs.
+
+SQLite ignores the foreign key switch inside a transaction, and with enforcement on, dropping the old table would
+delete the rows that reference it through `ON DELETE CASCADE`. So inside a transaction a rebuild goes ahead only when
+no table references the one being rebuilt, and fails with an explanation otherwise. Code that has to rebuild a
+referenced table in a transaction (a migration, say) switches enforcement off around it:
+
+```ts
+await db.schema.withoutForeignKeyConstraints(() =>   // SQLite only
+  db.transaction(async () => {
+    await db.schema.table("users", (t) => t.string("name", 100).change());
+  })
+);
+```
+
+### Transactions
+
+Schema changes run in the transaction open on the connection, like queries, and a change returned unawaited from a
+`transaction()` callback still runs in it: a change runs in the async context it was created in. Postgres, SQLite and
+SQL Server roll DDL back with the transaction. **MySQL and MariaDB commit DDL implicitly**: a schema change there ends
+the open transaction, and it cannot be rolled back.
+
+### Knex-compatible schema builder
+
+Migrations converted from 0.x use `db.schema.knex` (with `migration({ compat: "knex" })`). It has Knex's method names
+and semantics, and writes exactly the SQL Knex 3.3 wrote on each database, so tenants migrated before and after the
+upgrade end up with the same schema.
+
+```js
+await db.schema.knex.createTable("orders", (t) => {
+  t.increments("id").primary();
+  t.integer("customer_id").unsigned().notNullable().references("id").inTable("customers").onDelete("CASCADE");
+  t.decimal("total", 12, 2).notNullable().defaultTo(0);
+  t.timestamps(true, true);
+});
+```
+
+- Tables: `createTable`, `createTableIfNotExists`, `alterTable` (or `table`), `dropTable`, `dropTableIfExists`,
+  `renameTable`, `raw`. Calls chain as in Knex, and `toSQL()` returns what Knex's `toSQL()` returns. Unlike Knex's,
+  every call returns a new builder, so separate calls on one `schema` never run each other's statements.
+- Columns: `increments`, `bigIncrements`, `integer`, `bigInteger`, `smallint`, `tinyint`, `string`, `text`, `boolean`,
+  `date`, `datetime`, `timestamp`, `time`, `timestamps(useTimestamps, defaultToNow)`, `decimal`, `float`, `double`,
+  `json`, `jsonb`, `uuid`, `enu`, `binary`, `specificType`.
+- Chains: `primary`, `notNullable`, `nullable`, `defaultTo` (a value, or a `sql` fragment for `knex.raw`/`knex.fn.now()`),
+  `unique`, `index`, `unsigned`, `references().inTable().onDelete()`, `onUpdate`, `withKeyName`, `alter()`.
+- Table methods: `index`, `unique`, `primary`, `foreign`, `dropColumn(s)`, `renameColumn`, `dropForeign`, `dropIndex`,
+  `dropUnique`, `dropPrimary`, `dropTimestamps`, and on MySQL `engine`, `charset`, `collate`.
+- Knex added the `charset` and `collate` of a MySQL connection config to every CREATE TABLE. Pass them on:
+  `db.schema.knex.withOptions({ charset: "utf8mb4", collate: "utf8mb4_unicode_ci" })`.
+
+Where Knex read the database before altering, this does the same work: a MySQL column rename reads the column with
+`SHOW FULL FIELDS` and rewrites it with `CHANGE`, dropping and restoring the foreign keys that point at the table, and
+most SQLite alterations rebuild the table as Knex did, keeping an index on a dropped column with its other columns, and
+(as Knex did) not recreating triggers. The resulting catalog is Knex's; the CREATE TABLE text SQLite stores after a
+rebuild is formatted differently. Not offered: column `comment`, `collate`, `first`, `after` and `check…` modifiers,
+`setNullable`/`dropNullable`, index predicates, and `hasTable`/`hasColumn`.
