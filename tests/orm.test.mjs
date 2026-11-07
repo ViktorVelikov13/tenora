@@ -188,18 +188,29 @@ const DDL = {
     "create table accounts (id int auto_increment primary key, name varchar(100) not null unique, balance int not null default 0) engine=InnoDB",
   sqlite:
     "create table accounts (id integer primary key autoincrement, name varchar(100) not null unique, balance integer not null default 0)",
+  mssql:
+    "create table accounts (id int identity(1,1) primary key, name nvarchar(100) not null unique, balance int not null default 0)",
 };
+DDL.mariadb = DDL.mysql;
 
-const ORM_CLIENT = {
-  postgres: { client: "pg" },
-  mysql: { client: "mysql2" },
-  // No mariadb driver yet; MariaDB servers are reached through mysql2 with the MariaDB dialect.
-  mariadb: { client: "mysql2", dialect: "mariadb" },
-};
+const DIALECT = { "better-sqlite3": "sqlite", postgres: "postgres", mysql: "mysql", mariadb: "mariadb", mssql: "mssql" };
+
+const ORM_CLIENT = { postgres: "pg", mysql: "mysql2", mariadb: "mariadb", mssql: "mssql" };
 
 const NOT_YET = {
   sqlite3: "the sqlite3 driver is dropped in 1.0",
-  mssql: "the SQL Server driver is not implemented yet",
+};
+
+/** The ORM's config for a test server, in the shape 0.x configs use. */
+const serverConfig = (engine, database) => {
+  const { host, port, user, password } = engine.server;
+  return {
+    client: ORM_CLIENT[engine.id],
+    connection:
+      engine.id === "mssql"
+        ? { server: host, port, user, password, database, options: { encrypt: false, trustServerCertificate: true } }
+        : { host, port, user, password, database },
+  };
 };
 
 describe("ORM against a real database", () => {
@@ -207,7 +218,7 @@ describe("ORM against a real database", () => {
     const skip = engine.skip || NOT_YET[engine.id] || false;
     describe(engine.label, { skip }, () => {
       const isSqlite = engine.id === "better-sqlite3";
-      const dialect = isSqlite ? "sqlite" : engine.id === "postgres" ? "postgres" : "mysql";
+      const dialect = DIALECT[engine.id];
       const database = `tenora_orm_${randomBytes(3).toString("hex")}`;
       const sqliteDir = isSqlite ? fs.mkdtempSync(path.join(os.tmpdir(), "tenora-orm-")) : undefined;
       let admin;
@@ -225,12 +236,7 @@ describe("ORM against a real database", () => {
           admin = knex(engine.knexConfig(engine.adminDatabase));
           await engine.createDatabase(admin, database);
           observer = knex(engine.knexConfig(database));
-          const { host, port, user, password } = engine.server;
-          db = createConnection({
-            ...ORM_CLIENT[engine.id],
-            connection: { host, port, user, password, database },
-            pool: { max: 5, acquireTimeoutMillis: 5_000 },
-          });
+          db = createConnection({ ...serverConfig(engine, database), pool: { max: 5, acquireTimeoutMillis: 5_000 } });
         }
         await db.raw(sql`${sql.raw(DDL[dialect])}`);
       });
@@ -250,6 +256,12 @@ describe("ORM against a real database", () => {
       });
 
       const names = async () => (await db.table("accounts").orderBy("name").pluck("name"));
+
+      // SQL Server's default READ COMMITTED makes a reader wait for the writer's lock; READPAST skips locked rows.
+      const committedRows = (name) =>
+        dialect === "mssql"
+          ? observer.raw("select name from accounts with (readpast) where name = ?", [name])
+          : observer("accounts").where({ name });
 
       describe("query builder", () => {
         it("inserts, reads, updates and deletes", async () => {
@@ -305,9 +317,9 @@ describe("ORM against a real database", () => {
         it("hides uncommitted writes from other connections", { skip: isSqlite && "SQLite has one connection" }, async () => {
           await db.transaction(async () => {
             await db.table("accounts").insert({ name: "ada" });
-            assert.equal((await observer("accounts").where({ name: "ada" })).length, 0);
+            assert.equal((await committedRows("ada")).length, 0);
           });
-          assert.equal((await observer("accounts").where({ name: "ada" })).length, 1);
+          assert.equal((await committedRows("ada")).length, 1);
         });
 
         it("keeps queries started together with Promise.all inside the transaction", async () => {
@@ -465,10 +477,7 @@ describe("ORM against a real database", () => {
         it("gives up waiting for a free connection instead of hanging", async () => {
           const config = isSqlite
             ? { client: "better-sqlite3", connection: { filename: path.join(sqliteDir, `${database}.sqlite`) } }
-            : {
-                ...ORM_CLIENT[engine.id],
-                connection: { host: engine.server.host, port: engine.server.port, user: engine.server.user, password: engine.server.password, database },
-              };
+            : serverConfig(engine, database);
           const tiny = createConnection({ ...config, pool: { max: 1, acquireTimeoutMillis: 300 } });
           try {
             // The transaction holds the only connection, so the query outside it can never get one.
@@ -480,6 +489,27 @@ describe("ORM against a real database", () => {
             await tiny.destroy();
           }
         });
+
+        it(
+          "runs at the chosen isolation level, and leaves the pooled connection at the default",
+          { skip: !["postgres", "mssql"].includes(dialect) && "only checked where the current level can be read" },
+          async () => {
+            const level =
+              dialect === "postgres"
+                ? sql`select current_setting('transaction_isolation') as level`
+                : sql`select transaction_isolation_level as level from sys.dm_exec_sessions where session_id = @@spid`;
+            const [serializable, readCommitted] = dialect === "postgres" ? ["serializable", "read committed"] : [4, 2];
+            // One connection, so the query after the transaction runs on the same session.
+            const single = createConnection({ ...serverConfig(engine, database), pool: { max: 1 } });
+            try {
+              const inside = await single.transaction(() => single.raw(level), { isolation: "serializable" });
+              assert.equal(inside[0].level, serializable);
+              assert.equal((await single.raw(level))[0].level, readCommitted);
+            } finally {
+              await single.destroy();
+            }
+          }
+        );
 
         it("supports an explicit transaction handle", async () => {
           const trx = await db.beginTransaction();

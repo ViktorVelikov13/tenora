@@ -2,8 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { compileRaw, type CompiledQuery } from "./compile";
 import { type Client, type Dialect, defaultDialect, resolveDriverName } from "./dialect";
 import { createBetterSqlite3Pool } from "./drivers/betterSqlite3";
+import { createMariadbPool } from "./drivers/mariadb";
 import { createMysql2Pool } from "./drivers/mysql2";
 import { createPgPool } from "./drivers/pg";
+import { createTediousPool } from "./drivers/tedious";
 import type { DriverPool, DriverResult, PoolOptions } from "./drivers/types";
 import { isConcurrencyError, QueryError } from "./errors";
 import { QueryBuilder } from "./query/builder";
@@ -11,9 +13,9 @@ import type { RawSql } from "./sql";
 import { type Scope, TransactionRoot, type TransactionOptions } from "./transaction";
 
 export type ConnectionConfig = {
-  /** the driver: "pg", "mysql2" or "better-sqlite3" (0.x aliases such as "postgres" and "sqlite" work too) */
+  /** the driver: "pg", "mysql2", "mariadb", "better-sqlite3" or "mssql" (tedious); 0.x aliases such as "postgres" work too */
   client: Client;
-  /** the SQL dialect, when the driver's default is not right, e.g. "mariadb" for a MariaDB server through mysql2 */
+  /** the SQL dialect, when the driver's default is not right, e.g. "mariadb" for a MariaDB server reached through mysql2 */
   dialect?: Dialect;
   /** passed to the driver as is: host, port, user, password, database, ssl, … or filename for SQLite */
   connection: Record<string, unknown>;
@@ -49,8 +51,12 @@ const createPool = (config: ConnectionConfig): DriverPool => {
       return createPgPool(config.connection, config.pool);
     case "mysql2":
       return createMysql2Pool(config.connection, config.pool);
+    case "mariadb":
+      return createMariadbPool(config.connection, config.pool);
     case "better-sqlite3":
       return createBetterSqlite3Pool(config.connection, config.pool);
+    case "tedious":
+      return createTediousPool(config.connection, config.pool);
   }
 };
 

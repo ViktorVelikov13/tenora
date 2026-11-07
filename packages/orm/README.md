@@ -4,9 +4,9 @@ The database layer of Tenora 1.0: connections, a query builder in the style of L
 join on their own. It is being built on the `next` branch; see [the plan](../../docs/orm/plan.md). Models and tenancy
 come in later phases.
 
-Status: Postgres (`pg`), MySQL (`mysql2`) and SQLite (`better-sqlite3`) work and are tested. MariaDB servers are
-reached through `mysql2` with `dialect: "mariadb"`, which only the Docker test run covers. The `mariadb` and SQL Server
-(`tedious`) drivers are not written yet.
+Status: every database Tenora supports works and is tested: Postgres (`pg`), MySQL (`mysql2`), MariaDB (`mariadb`, or
+`mysql2` with `dialect: "mariadb"`), SQLite (`better-sqlite3`) and SQL Server (`tedious`, with `client: "mssql"`).
+`forUpdate()` is not available on SQL Server yet.
 
 ## Connecting
 
@@ -14,11 +14,15 @@ reached through `mysql2` with `dialect: "mariadb"`, which only the Docker test r
 import { createConnection, sql } from "@tenora/orm";
 
 const db = createConnection({
-  client: "pg", // or "mysql2", "better-sqlite3"
+  client: "pg", // or "mysql2", "mariadb", "better-sqlite3", "mssql"
   connection: { host, port, user, password, database }, // passed to the driver; { filename } for SQLite
   pool: { max: 10 },
 });
 ```
+
+For SQL Server the connection takes the shape 0.x configs use: `{ server, port, user, password, database, options }`,
+where `options` goes to tedious (for example `{ encrypt: false, trustServerCertificate: true }`). tedious has no pool of
+its own, so Tenora pools its connections.
 
 Install the driver yourself (`npm install pg`). It is loaded from your project, so a globally installed CLI uses it too.
 

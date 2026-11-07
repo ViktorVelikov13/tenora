@@ -153,8 +153,11 @@ Driver decisions:
   ([#61262](https://github.com/nodejs/node/pull/61262)), which is one reason 1.0 requires Node 24.15.
 - Dates and booleans are encoded by Tenora for SQLite: `better-sqlite3` throws on them, and `node:sqlite` silently
   stores a `Date` as `NULL`.
-- **`mariadb`**: big integers and ids come back as `BigInt`, decimals as strings; the adapter normalizes them, and resets
-  session state when a connection goes back to the pool, since the driver no longer does.
+- **`mariadb`**: big integers and ids come back as `BigInt` by default; the adapter asks the driver for numbers instead,
+  with decimals as exact strings, so results look the same as through `mysql2`.
+- **SQL Server**: statements without parameters run as plain batches, because `sp_executesql` would undo
+  `SET TRANSACTION ISOLATION LEVEL` and reject `BEGIN TRANSACTION`; an isolation level is reset to `READ COMMITTED`
+  before the connection goes back to the pool, since on SQL Server it outlives the transaction.
 - **`tedious`** needs a declared type for every parameter, so its adapter infers the TDS type from the JavaScript value,
   as Kysely's own SQL Server driver does.
 - Drivers are resolved from the project's `node_modules` first, as `resolveKnex` does today, so a globally installed

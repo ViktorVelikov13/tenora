@@ -16,7 +16,9 @@ export default defineConfig({
       "kysely",
       "pg",
       "mysql2",
+      "mariadb",
       "better-sqlite3",
+      "tedious",
     ],
   },
 });

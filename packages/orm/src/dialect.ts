@@ -7,10 +7,14 @@ export type Client =
   | "postgresql"
   | "mysql"
   | "mysql2"
+  | "mariadb"
   | "sqlite"
-  | "better-sqlite3";
+  | "better-sqlite3"
+  | "mssql"
+  | "sqlserver"
+  | "tedious";
 
-export type Driver = "pg" | "mysql2" | "better-sqlite3";
+export type Driver = "pg" | "mysql2" | "mariadb" | "better-sqlite3" | "tedious";
 
 export const resolveDriverName = (client: Client | "sqlite3" | (string & {})): Driver => {
   switch (client) {
@@ -21,6 +25,12 @@ export const resolveDriverName = (client: Client | "sqlite3" | (string & {})): D
     case "mysql":
     case "mysql2":
       return "mysql2";
+    case "mariadb":
+      return "mariadb";
+    case "mssql":
+    case "sqlserver":
+    case "tedious":
+      return "tedious";
     case "sqlite":
     case "better-sqlite3":
       return "better-sqlite3";
@@ -36,7 +46,9 @@ export const resolveDriverName = (client: Client | "sqlite3" | (string & {})): D
 const DEFAULT_DIALECT: Record<Driver, Dialect> = {
   pg: "postgres",
   mysql2: "mysql",
+  mariadb: "mariadb",
   "better-sqlite3": "sqlite",
+  tedious: "mssql",
 };
 
 export const defaultDialect = (driver: Driver): Dialect => DEFAULT_DIALECT[driver];

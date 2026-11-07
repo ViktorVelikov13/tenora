@@ -88,9 +88,21 @@ const beginStatements = (dialect: Dialect, isolation: IsolationLevel | undefined
       // SQLite transactions are always serializable.
       return ["begin"];
     case "mssql":
-      throw new Error("Tenora: transactions on SQL Server are not implemented yet.");
+      return isolation
+        ? [`set transaction isolation level ${isolation}`, "begin transaction"]
+        : ["begin transaction"];
   }
 };
+
+const savepointSql = (dialect: Dialect, name: string) =>
+  dialect === "mssql" ? `save transaction ${name}` : `savepoint ${name}`;
+
+const rollbackToSavepointSql = (dialect: Dialect, name: string) =>
+  dialect === "mssql" ? `rollback transaction ${name}` : `rollback to savepoint ${name}`;
+
+// SQL Server rolls back the whole transaction itself on some errors, deadlocks among them; a second ROLLBACK would fail.
+const rollbackSql = (dialect: Dialect) =>
+  dialect === "mssql" ? "if @@trancount > 0 rollback transaction" : "rollback";
 
 /**
  * A transaction on one physical connection, taken from the pool for its whole life. Every statement goes through one
@@ -109,7 +121,8 @@ export class TransactionRoot {
   private constructor(
     readonly dialect: Dialect,
     readonly pool: DriverPool,
-    readonly client: DriverConnection
+    readonly client: DriverConnection,
+    readonly isolation: IsolationLevel | undefined
   ) {
     this.scope = new Scope(this, undefined, 1);
     this.active = this.scope;
@@ -118,7 +131,7 @@ export class TransactionRoot {
   static async begin(dialect: Dialect, pool: DriverPool, isolation?: IsolationLevel): Promise<TransactionRoot> {
     const statements = beginStatements(dialect, isolation);
     const client = await pool.acquire();
-    const root = new TransactionRoot(dialect, pool, client);
+    const root = new TransactionRoot(dialect, pool, client, isolation);
     try {
       for (const statement of statements) await root.#run(statement, []);
     } catch (error) {
@@ -187,7 +200,7 @@ export class TransactionRoot {
     return this.#enqueue(async () => {
       this.#assertUsable(parent);
       const scope = new Scope(this, parent, parent.level + 1);
-      await this.#run(`savepoint ${scope.savepoint}`, []);
+      await this.#run(savepointSql(this.dialect, scope.savepoint), []);
       this.active = scope;
       return scope;
     });
@@ -207,7 +220,7 @@ export class TransactionRoot {
     return this.#enqueue(async () => {
       try {
         if (this.state === "open" && this.active === scope) {
-          await this.#run(`rollback to savepoint ${scope.savepoint}`, []);
+          await this.#run(rollbackToSavepointSql(this.dialect, scope.savepoint), []);
         }
       } finally {
         this.#close(scope);
@@ -263,7 +276,7 @@ export class TransactionRoot {
     this.state = "rolling_back";
     return this.#enqueue(async () => {
       try {
-        await this.client.query("rollback", []);
+        await this.client.query(rollbackSql(this.dialect), []);
       } catch {
         this.#broken = true;
       } finally {
@@ -276,6 +289,12 @@ export class TransactionRoot {
   /** Returns the connection to the pool, or closes it if it may be in an unknown state. */
   async finish(): Promise<void> {
     await this.#tail;
+    // On SQL Server an isolation level outlives the transaction, so it is reset before the connection is reused.
+    if (this.dialect === "mssql" && this.isolation && !this.#broken) {
+      await this.client.query("set transaction isolation level read committed", []).catch(() => {
+        this.#broken = true;
+      });
+    }
     await this.pool.release(this.client, this.#broken);
   }
 

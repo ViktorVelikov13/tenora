@@ -27,7 +27,9 @@
     "multi-tenant",
     "postgres",
     "mysql",
-    "sqlite"
+    "mariadb",
+    "sqlite",
+    "sqlserver"
   ],
   "author": "",
   "license": "MIT",
@@ -36,17 +38,25 @@
   },
   "peerDependencies": {
     "better-sqlite3": ">=12",
+    "mariadb": "^3.0.0",
     "mysql2": "^3.0.0",
-    "pg": "^8.0.0"
+    "pg": "^8.0.0",
+    "tedious": ">=18"
   },
   "peerDependenciesMeta": {
     "better-sqlite3": {
+      "optional": true
+    },
+    "mariadb": {
       "optional": true
     },
     "mysql2": {
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "tedious": {
       "optional": true
     }
   },
