@@ -21,7 +21,7 @@ export type PoolOptions = {
   min?: number;
   /** close a connection idle for this long (default 60 s) */
   idleTimeoutMillis?: number;
-  /** fail when no connection is free for this long (default 60 s) */
+  /** fail when no connection is free for this long, or connecting takes this long (default 60 s) */
   acquireTimeoutMillis?: number;
 };
 

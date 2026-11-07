@@ -19,6 +19,12 @@ import { loadEngines } from "./support/engines.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => (resolve = done));
+  return { promise, resolve };
+};
+
 /** Resolves once `count` callers are waiting, so two transactions can be lined up against each other. */
 const barrier = (count) => {
   let release;
@@ -89,6 +95,52 @@ describe("compiling queries", () => {
       sqlite: 'select * from "users" limit -1 offset ?',
       mssql: 'select * from "users" order by (select null) offset @1 rows',
     });
+  });
+
+  /** Runs a write against a connection whose execute() records the SQL instead of sending it. */
+  const capture = async (connection, run) => {
+    const statements = [];
+    connection.execute = (compiled) => {
+      statements.push(compiled.sql);
+      return Promise.resolve({ rows: [{ id: 1 }], affectedRows: 1, insertId: 1 });
+    };
+    try {
+      await run(connection);
+    } finally {
+      delete connection.execute;
+    }
+    return statements;
+  };
+
+  it("returns inserted ids with each dialect's syntax", async () => {
+    const expected = {
+      postgres: 'insert into "accounts" ("name") values ($1) returning "id"',
+      mariadb: "insert into `accounts` (`name`) values (?) returning `id`",
+      sqlite: 'insert into "accounts" ("name") values (?) returning "id"',
+      mssql: 'insert into "accounts" ("name") output "inserted"."id" values (@1)',
+      // MySQL has no RETURNING; the driver reports the insert id instead.
+      mysql: "insert into `accounts` (`name`) values (?)",
+    };
+    for (const [dialect, text] of Object.entries(expected)) {
+      const statements = await capture(db[dialect], (c) => c.table("accounts").insertGetId({ name: "ada" }));
+      assert.deepEqual(statements, [text], dialect);
+    }
+  });
+
+  it("compiles increments and deletes for every dialect", async () => {
+    const expected = {
+      postgres: ['update "accounts" set "balance" = "balance" + $1 where "id" = $2', 'delete from "accounts" where "id" = $1'],
+      mysql: ["update `accounts` set `balance` = `balance` + ? where `id` = ?", "delete from `accounts` where `id` = ?"],
+      sqlite: ['update "accounts" set "balance" = "balance" + ? where "id" = ?', 'delete from "accounts" where "id" = ?'],
+      mssql: ['update "accounts" set "balance" = "balance" + @1 where "id" = @2', 'delete from "accounts" where "id" = @1'],
+    };
+    for (const [dialect, texts] of Object.entries(expected)) {
+      const statements = await capture(db[dialect], async (c) => {
+        await c.table("accounts").where("id", 7).increment("balance");
+        await c.table("accounts").where("id", 7).delete();
+      });
+      assert.deepEqual(statements, texts, dialect);
+    }
   });
 
   it("turns empty IN lists into conditions that are valid SQL", () => {
@@ -274,12 +326,15 @@ describe("ORM against a real database", () => {
         });
 
         it("rejects a query that runs after its transaction ended, instead of running it outside", async () => {
+          const committed = deferred();
           let late;
           await db.transaction(async () => {
             await db.table("accounts").insert({ name: "ada" });
-            late = sleep(30).then(() => db.table("accounts").insert({ name: "late" }));
+            // Created here, so it carries the transaction's context, but it only runs once the transaction ended.
+            late = committed.promise.then(() => db.table("accounts").insert({ name: "late" }));
             late.catch(() => {});
           });
+          committed.resolve();
           await assert.rejects(late, TransactionClosedError);
           assert.deepEqual(await names(), ["ada"]);
         });
@@ -376,12 +431,17 @@ describe("ORM against a real database", () => {
 
         it("refuses an outer query while a nested transaction is open", async () => {
           await db.transaction(async () => {
+            const inside = deferred();
+            const proceed = deferred();
             const nested = db.transaction(async () => {
-              await sleep(40);
+              // The callback only starts once its SAVEPOINT ran.
+              inside.resolve();
+              await proceed.promise;
               await db.table("accounts").insert({ name: "inner" });
             });
-            await sleep(10);
+            await inside.promise;
             await assert.rejects(db.table("accounts").insert({ name: "outer" }), ConcurrentTransactionError);
+            proceed.resolve();
             await nested;
           });
           assert.deepEqual(await names(), ["inner"]);
@@ -401,6 +461,25 @@ describe("ORM against a real database", () => {
             assert.deepEqual(await names(), ["audit"]);
           }
         );
+
+        it("gives up waiting for a free connection instead of hanging", async () => {
+          const config = isSqlite
+            ? { client: "better-sqlite3", connection: { filename: path.join(sqliteDir, `${database}.sqlite`) } }
+            : {
+                ...ORM_CLIENT[engine.id],
+                connection: { host: engine.server.host, port: engine.server.port, user: engine.server.user, password: engine.server.password, database },
+              };
+          const tiny = createConnection({ ...config, pool: { max: 1, acquireTimeoutMillis: 300 } });
+          try {
+            // The transaction holds the only connection, so the query outside it can never get one.
+            await assert.rejects(
+              tiny.transaction(() => withoutTransaction(() => tiny.table("accounts").count())),
+              /waited|timeout/i
+            );
+          } finally {
+            await tiny.destroy();
+          }
+        });
 
         it("supports an explicit transaction handle", async () => {
           const trx = await db.beginTransaction();

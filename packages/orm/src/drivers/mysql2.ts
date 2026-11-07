@@ -48,17 +48,39 @@ export const createMysql2Pool = (connection: Record<string, unknown>, options: P
         connectionLimit: options.max ?? DEFAULT_POOL.max,
         maxIdle: options.min ?? DEFAULT_POOL.min,
         idleTimeout: options.idleTimeoutMillis ?? DEFAULT_POOL.idleTimeoutMillis,
-        connectTimeout: options.acquireTimeoutMillis ?? DEFAULT_POOL.acquireTimeoutMillis,
       });
     }
     return pool;
+  };
+
+  // mysql2 waits for a free connection without a limit, so the wait is timed here.
+  const acquireTimeout = options.acquireTimeoutMillis ?? DEFAULT_POOL.acquireTimeoutMillis;
+  const getConnection = async () => {
+    const pending = getPool().getConnection();
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        // A connection that arrives after giving up goes straight back to the pool.
+        pending.then((late) => late.release(), () => undefined);
+        reject(
+          new Error(
+            `Tenora: waited ${acquireTimeout} ms for a free MySQL connection; every connection in the pool is in use.`
+          )
+        );
+      }, acquireTimeout);
+    });
+    try {
+      return await Promise.race([pending, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   };
 
   return {
     driver: "mysql2",
     classify,
     async acquire() {
-      const raw = await getPool().getConnection();
+      const raw = await getConnection();
       const wrapped: DriverConnection = {
         async query(sql, parameters) {
           // query(), not execute(): the values are escaped by the driver, as Knex does, and no statement cache grows.
