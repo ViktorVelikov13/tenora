@@ -587,6 +587,56 @@ describe("schema changes against a real database", () => {
         }
       });
 
+      it("creates every column type and reads a row back", async () => {
+        try {
+          await db.schema.create("kinds", (t) => {
+            t.increments("id");
+            t.string("s", 40).default("x");
+            t.text("txt").nullable();
+            t.integer("i").default(-1);
+            t.unsignedInteger("ui").nullable();
+            t.bigInteger("bi").default(0);
+            t.smallInteger("si").default(0);
+            t.boolean("b").default(false);
+            t.decimal("d", 8, 3).default(1.5);
+            t.float("f").default(0.5);
+            t.double("dbl").nullable();
+            t.date("dt").nullable();
+            t.dateTime("dtm", 3).nullable();
+            t.timestamp("ts").useCurrent();
+            t.time("tm").nullable();
+            t.json("j").default('{"a":1}');
+            t.uuid("u").nullable();
+            t.binary("bin").nullable();
+            t.enum("e", ["x", "y"]).nullable();
+          });
+          const uuid = "6f1d2a43-5b2c-4a49-9d3c-6c3f1b0c9a11";
+          await db.table("kinds").insert({
+            txt: "long text",
+            ui: 5,
+            dbl: 2.25,
+            dt: "2024-01-02",
+            dtm: new Date("2024-01-02T03:04:05.678Z"),
+            tm: "10:11:12",
+            u: uuid,
+            bin: Buffer.from([1, 2, 3]),
+            e: "y",
+          });
+          const row = await db.table("kinds").first();
+          assert.equal(row.s, "x");
+          assert.equal(row.txt, "long text");
+          assert.deepEqual([row.i, row.ui, row.bi, row.si, row.b, row.d, row.f, row.dbl].map(Number), [-1, 5, 0, 0, 0, 1.5, 0.5, 2.25]);
+          assert.ok(row.ts, "useCurrent() set the timestamp");
+          assert.deepEqual(typeof row.j === "string" ? JSON.parse(row.j) : row.j, { a: 1 });
+          assert.equal(String(row.u).toLowerCase(), uuid);
+          assert.ok(Buffer.from(row.bin).equals(Buffer.from([1, 2, 3])));
+          assert.equal(row.e, "y");
+          assert.ok(row.dt && row.dtm && row.tm);
+        } finally {
+          await dropAll("kinds");
+        }
+      });
+
       it("adds, changes, renames and drops columns, keeping the rows", async () => {
         try {
           await db.schema.create("notes", (t) => {
@@ -604,10 +654,12 @@ describe("schema changes against a real database", () => {
           await db.schema.table("notes", (t) => {
             t.string("summary", 100).nullable().index();
             t.string("title", 200).change();
-            t.integer("views").nullable().change();
+            t.integer("views").nullable().default(5).change();
             t.renameColumn("code", "slug");
           });
-          await db.table("notes").insert({ title: "x".repeat(150), views: null, summary: "s" });
+          await db.table("notes").insert({ title: "x".repeat(150), summary: "s" });
+          assert.equal(Number(await db.table("notes").where("summary", "s").value("views")), 5, "the new default");
+          await db.table("notes").where("title", "one").update({ views: null });
           assert.deepEqual(await db.table("notes").orderBy("id").pluck("slug"), [null, "b", null]);
           await rejects(db.table("notes").insert({ title: null }), "not_null_violation");
 
