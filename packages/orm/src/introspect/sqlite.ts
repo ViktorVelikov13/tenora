@@ -337,6 +337,3 @@ export const sqlite: Introspector = {
     };
   },
 };
-
-/** @internal Exposed for tests of the parser. */
-export const parseSqliteCreateTable = parseCreateTable;
