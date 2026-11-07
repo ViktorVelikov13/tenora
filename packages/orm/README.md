@@ -269,7 +269,8 @@ setConnectionResolver((name) => (name === "default" ? db : undefined));
 ```
 
 Tenancy registers a resolver that knows the current tenant. A name the resolver does not know, or no resolver, throws:
-a model never falls back to another database. Inside `db.transaction()`, model queries, saves and the events they
+a model never falls back to another database. The resolver runs when the query is created (`User.query()`,
+`User.where(…)`), not when it is awaited, so build a query inside the context it should run in. Inside `db.transaction()`, model queries, saves and the events they
 fire join the transaction like any other query. An instance remembers its database, not its transaction: one loaded
 before a transaction and saved inside it joins it, and one loaded inside and saved after it commits runs outside it.
 Only `user.using(trx)` pins a transaction on an instance; `User.using(trx)` runs one query in it.
@@ -332,7 +333,8 @@ Casts convert between what the database returns and what an attribute holds:
 
 Null passes through without calling the cast. `createdAt`, `updatedAt` and `deletedAt` are datetimes without a
 declared cast. Casts run when a model is read and written; in between, an attribute holds what was assigned to it.
-`satisfies Casts<User>` checks the casts against the declared fields, typos included.
+`satisfies Casts<User>` checks the casts against the declared fields, typos included; without it, write the object
+`as const`, since TypeScript would otherwise widen `"boolean"` to `string`.
 
 Changes are tracked against the values last read or saved, compared by what the cast would write (so `1` and `true`
 under a boolean cast are no change) and JSON by content, including edits in place (`user.settings.tabs.push(…)`):
