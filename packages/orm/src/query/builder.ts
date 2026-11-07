@@ -164,6 +164,11 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
     return this.state;
   }
 
+  /** @internal A copy with part of its state replaced, for the model layer (it groups wheres before adding scopes). */
+  withState(changes: Partial<SelectState>): QueryBuilder<R> {
+    return this.#with(changes);
+  }
+
   #with(changes: Partial<SelectState>, transaction = this.transaction): QueryBuilder<R> {
     return new QueryBuilder<R>(this.connection, { ...this.state, ...changes }, transaction);
   }

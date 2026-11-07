@@ -65,6 +65,7 @@ export {
   type SchemaInfo,
   type TableInfo,
 } from "./introspect";
+export * from "./model/index";
 export { JoinClause, QueryBuilder } from "./query/builder";
 export type { Operator } from "./query/state";
 export { RawSql, sql, SqlIdentifier, SqlText } from "./sql";
