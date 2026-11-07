@@ -32,6 +32,7 @@ export {
   type ContextFactory,
   type LatestResult,
   type Migration,
+  type KnexMigrationContext,
   type MigrationContext,
   type MigrationDefinition,
   type MigrationStatus,
@@ -75,7 +76,6 @@ export {
   ForeignIdColumnDefinition,
   ForeignKeyDefinition,
   type ColumnType,
-  type ReferentialAction,
 } from "./schema/blueprint";
 export { SchemaBuilder, SchemaChange } from "./schema/builder";
 export { KnexColumnBuilder, KnexForeignBuilder, KnexTableBuilder } from "./schema/knex/blueprint";

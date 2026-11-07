@@ -42,6 +42,13 @@ const enter = (context: Context, connection: Connection, scope: Scope): Context 
   current: scope,
 });
 
+/**
+ * Runs `fn` in `context` and settles what it returns there too. A query builder returned unawaited only runs when it
+ * is awaited, and that await has to happen inside the context, or the query would escape the transaction.
+ */
+const runIn = <T>(context: Context, fn: () => Promise<T> | T): Promise<T> =>
+  storage.run(context, async () => await fn());
+
 const backoff = (attempt: number) =>
   new Promise((resolve) => setTimeout(resolve, Math.round(Math.random() * 25 * attempt)));
 
@@ -76,7 +83,7 @@ export class Transaction {
 
   /** Runs `fn` with this transaction as the ambient one, so queries on its connection join it. */
   run<T>(fn: () => Promise<T> | T): Promise<T> {
-    return Promise.resolve(storage.run(enter(currentContext(), this.connection, this.root.scope), fn));
+    return runIn(enter(currentContext(), this.connection, this.root.scope), fn);
   }
 
   afterCommit(callback: () => unknown) {
@@ -159,7 +166,7 @@ export class Connection {
       const scope = await root.beginNested(parent);
       let result: T;
       try {
-        result = await storage.run(enter(context, this, scope), fn);
+        result = await runIn(enter(context, this, scope), fn);
       } catch (error) {
         await root.rollbackNested(scope);
         throw error;
@@ -177,7 +184,7 @@ export class Connection {
       const root = await TransactionRoot.begin(this.dialect, this.#pool, options.isolation);
       let result: T;
       try {
-        result = await storage.run(enter(context, this, root.scope), fn);
+        result = await runIn(enter(context, this, root.scope), fn);
         await root.commit();
       } catch (error) {
         await root.rollback();
@@ -259,4 +266,4 @@ export const afterCommit = (callback: () => unknown): void | Promise<void> => {
 
 /** Runs `fn` outside every ambient transaction, for writes that must survive a rollback (audit logs, counters). */
 export const withoutTransaction = <T>(fn: () => Promise<T> | T): Promise<T> =>
-  Promise.resolve(storage.run(EMPTY, fn));
+  runIn(EMPTY, fn);

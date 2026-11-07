@@ -619,6 +619,20 @@ describe("ORM against a real database", () => {
           assert.deepEqual(await names(), ["ada"]);
         });
 
+        it("runs a builder returned unawaited from the callback inside the transaction", async () => {
+          // The select only runs when transaction() awaits it; it must still see the transaction's own insert.
+          const rows = await db.transaction(async () => {
+            await db.table("accounts").insert({ name: "uncommitted" });
+            return db.table("accounts").where("name", "uncommitted");
+          });
+          assert.equal(rows.length, 1);
+          await db.transaction(() => db.transaction(() => db.table("accounts").where("name", "uncommitted")));
+          const trx = await db.beginTransaction();
+          await db.table("accounts").using(trx).insert({ name: "explicit" });
+          assert.equal((await trx.run(() => db.table("accounts").where("name", "explicit"))).length, 1);
+          await trx.rollback();
+        });
+
         it("rejects the queries still queued when a transaction rolls back", async () => {
           let queued;
           await assert.rejects(
