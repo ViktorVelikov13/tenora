@@ -6,7 +6,8 @@
     [
       "@tenora/core",
       "@tenora/cli",
-      "@tenora/multi-tenant"
+      "@tenora/multi-tenant",
+      "@tenora/orm"
     ]
   ],
   "linked": [],

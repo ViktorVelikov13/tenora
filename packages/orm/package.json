@@ -1,0 +1,73 @@
+{
+  "name": "@tenora/orm",
+  "version": "0.3.0",
+  "description": "Eloquent-inspired ORM for Tenora with ambient, per-connection transactions",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "prepack": "npm run build",
+    "lint": "echo 'add your linter'"
+  },
+  "keywords": [
+    "tenora",
+    "orm",
+    "multi-tenant",
+    "postgres",
+    "mysql",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "kysely": "0.29.8"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=12",
+    "mysql2": "^3.0.0",
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsdown": "^0.23.7",
+    "typescript": "^7.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ViktorVelikov13/tenora.git",
+    "directory": "packages/orm"
+  },
+  "homepage": "https://github.com/ViktorVelikov13/tenora#readme",
+  "bugs": {
+    "url": "https://github.com/ViktorVelikov13/tenora/issues"
+  },
+  "engines": {
+    "node": ">=24.15.0"
+  }
+}
