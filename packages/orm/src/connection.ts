@@ -9,6 +9,7 @@ import { createTediousPool } from "./drivers/tedious";
 import type { DriverPool, DriverResult, PoolOptions } from "./drivers/types";
 import { isConcurrencyError, QueryError } from "./errors";
 import { QueryBuilder } from "./query/builder";
+import { SchemaBuilder } from "./schema/builder";
 import type { RawSql } from "./sql";
 import { type Scope, TransactionRoot, type TransactionOptions } from "./transaction";
 
@@ -107,6 +108,11 @@ export class Connection {
   constructor(config: ConnectionConfig) {
     this.#pool = createPool(config);
     this.dialect = config.dialect ?? defaultDialect(this.#pool.driver);
+  }
+
+  /** The schema builder: `db.schema.create(…)`, and `db.schema.knex` for migrations converted from 0.x. */
+  get schema(): SchemaBuilder {
+    return new SchemaBuilder(this);
   }
 
   /** A query builder for one table. */
