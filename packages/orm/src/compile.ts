@@ -68,7 +68,8 @@ const createCold = (dialect: Dialect): Kysely<any> => {
 };
 
 const cold = new Map<Dialect, Kysely<any>>();
-const coldFor = (dialect: Dialect) => {
+/** @internal The compile-only Kysely for a dialect, shared with `compileSchema.ts`. */
+export const coldFor = (dialect: Dialect) => {
   let instance = cold.get(dialect);
   if (!instance) {
     instance = createCold(dialect);
@@ -78,7 +79,8 @@ const coldFor = (dialect: Dialect) => {
 };
 
 // Kysely's tag only reads the fragments as an array, so a plain array stands in for a TemplateStringsArray.
-const toKysely = (raw: RawSql): RawBuilder<unknown> =>
+/** @internal A `sql` fragment as Kysely's, shared with `compileSchema.ts`. */
+export const toKysely = (raw: RawSql): RawBuilder<unknown> =>
   kysql(
     raw.strings as unknown as TemplateStringsArray,
     ...raw.values.map((value) =>

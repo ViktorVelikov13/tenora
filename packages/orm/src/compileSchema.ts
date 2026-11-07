@@ -9,27 +9,12 @@
 import {
   type ColumnDefinitionBuilder,
   type CreateTableBuilder,
-  DummyDriver,
   type ForeignKeyConstraintBuilder,
-  Kysely,
-  MssqlAdapter,
-  MssqlIntrospector,
-  MssqlQueryCompiler,
-  MysqlAdapter,
-  MysqlIntrospector,
-  MysqlQueryCompiler,
-  PostgresAdapter,
-  PostgresIntrospector,
-  PostgresQueryCompiler,
-  type RawBuilder,
-  SqliteAdapter,
-  SqliteIntrospector,
-  SqliteQueryCompiler,
   sql as kysql,
 } from "kysely";
-import type { CompiledQuery } from "./compile";
+import { coldFor, type CompiledQuery, toKysely } from "./compile";
 import type { Dialect } from "./dialect";
-import { RawSql, SqlIdentifier, SqlText } from "./sql";
+import type { RawSql } from "./sql";
 
 export type ReferentialAction = "cascade" | "set null" | "restrict" | "no action" | "set default";
 
@@ -84,50 +69,6 @@ export type DdlStatement =
   | { readonly kind: "addDefault"; readonly table: string; readonly column: ColumnDdl }
   | { readonly kind: "dropTable"; readonly table: string; readonly ifExists: boolean }
   | { readonly kind: "renameTable"; readonly from: string; readonly to: string };
-
-const createCold = (dialect: Dialect): Kysely<any> => {
-  const parts =
-    dialect === "postgres"
-      ? ([PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler] as const)
-      : dialect === "sqlite"
-        ? ([SqliteAdapter, SqliteIntrospector, SqliteQueryCompiler] as const)
-        : dialect === "mssql"
-          ? ([MssqlAdapter, MssqlIntrospector, MssqlQueryCompiler] as const)
-          : ([MysqlAdapter, MysqlIntrospector, MysqlQueryCompiler] as const);
-  const [Adapter, Introspector, Compiler] = parts;
-  return new Kysely<any>({
-    dialect: {
-      createAdapter: () => new Adapter(),
-      createDriver: () => new DummyDriver(),
-      createIntrospector: (db) => new Introspector(db),
-      createQueryCompiler: () => new Compiler(),
-    },
-  });
-};
-
-const cold = new Map<Dialect, Kysely<any>>();
-const coldFor = (dialect: Dialect) => {
-  let instance = cold.get(dialect);
-  if (!instance) {
-    instance = createCold(dialect);
-    cold.set(dialect, instance);
-  }
-  return instance;
-};
-
-const toKysely = (raw: RawSql): RawBuilder<unknown> =>
-  kysql(
-    raw.strings as unknown as TemplateStringsArray,
-    ...raw.values.map((value) =>
-      value instanceof SqlIdentifier
-        ? kysql.ref(value.name)
-        : value instanceof SqlText
-          ? kysql.raw(value.text)
-          : value instanceof RawSql
-            ? toKysely(value)
-            : value
-    )
-  );
 
 /** A string literal for the dialect. */
 export const literal = (dialect: Dialect, value: string): string => {
