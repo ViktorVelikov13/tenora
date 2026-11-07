@@ -1,5 +1,6 @@
-# Newest server versions for `npm run test:docker`. Ports are deliberately non-default
-# so these can never be confused with a database already running on the machine.
+# Newest server versions for `npm run test:docker`. tests/run.mjs picks a free port for each server and its own
+# project name per run, so runs in parallel do not collide; the defaults below are for starting it by hand, and are
+# deliberately non-default so they can never be confused with a database already running on the machine.
 name: tenora-test
 
 services:
@@ -8,7 +9,7 @@ services:
     environment:
       POSTGRES_PASSWORD: Tenora_test_pw1
     ports:
-      - "127.0.0.1:56432:5432"
+      - "127.0.0.1:${TENORA_TEST_PG_PORT:-56432}:5432"
     tmpfs:
       - /var/lib/postgresql
     healthcheck:
@@ -24,7 +25,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: Tenora_test_pw1
     ports:
-      - "127.0.0.1:56306:3306"
+      - "127.0.0.1:${TENORA_TEST_MYSQL_PORT:-56306}:3306"
     tmpfs:
       - /var/lib/mysql
     healthcheck:
@@ -39,7 +40,7 @@ services:
     environment:
       MARIADB_ROOT_PASSWORD: Tenora_test_pw1
     ports:
-      - "127.0.0.1:56307:3306"
+      - "127.0.0.1:${TENORA_TEST_MARIADB_PORT:-56307}:3306"
     tmpfs:
       - /var/lib/mysql
     healthcheck:
@@ -55,7 +56,7 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: Tenora_test_pw1
     ports:
-      - "127.0.0.1:56433:1433"
+      - "127.0.0.1:${TENORA_TEST_MSSQL_PORT:-56433}:1433"
     healthcheck:
       test:
         - CMD-SHELL

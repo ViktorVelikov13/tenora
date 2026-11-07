@@ -16,6 +16,9 @@ jobs:
       matrix:
         node: [24, 26]
     name: test (Node ${{ matrix.node }})
+    # A fixed project name, so the log step below finds the containers the test run started.
+    env:
+      COMPOSE_PROJECT_NAME: tenora-test
     steps:
       - uses: actions/checkout@v7
 
