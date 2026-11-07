@@ -429,6 +429,28 @@ describe("models against a real database", () => {
           assert.deepEqual(admins, [false]);
         });
 
+        it("reads and writes through a custom cast", async () => {
+          class Email {
+            constructor(address) {
+              this.address = address.toLowerCase();
+            }
+          }
+          const Mailed = variant(User, {
+            casts: { ...User.casts, email: { get: (value) => new Email(value), set: (email) => email.address } },
+          });
+          const user = await Mailed.create({ name: "ada", email: new Email("ADA@X") });
+          assert.equal((await raw("users", user.id)).email, "ada@x");
+          const loaded = await Mailed.find(user.id);
+          assert.ok(loaded.email instanceof Email);
+          assert.equal(loaded.email.address, "ada@x");
+          // Compared by what the cast writes, so an equal value is no change.
+          loaded.email = new Email("Ada@x");
+          assert.equal(loaded.isDirty(), false);
+          loaded.email = new Email("bob@x");
+          await loaded.save();
+          assert.equal((await raw("users", user.id)).email, "bob@x");
+        });
+
         it("tracks changes by cast value, JSON by content and in-place edits", async () => {
           const user = await User.create({ name: "ada", email: "ada@x", isAdmin: false, settings: { a: 1, b: [1] } });
           user.isAdmin = 0;

@@ -44,7 +44,7 @@ export type ModelMeta = {
 
 const metas = new WeakMap<Function, ModelMeta>();
 
-const createMeta = (model: typeof Model): ModelMeta => {
+const createMeta = (model: ModelClass): ModelMeta => {
   const strategy = model.naming;
   const casts = new Map<string, AttributeCast>();
   for (const [attribute, definition] of Object.entries(model.casts ?? {})) {
@@ -94,7 +94,7 @@ const createMeta = (model: typeof Model): ModelMeta => {
 };
 
 /** @internal */
-export const metaOf = (model: typeof Model): ModelMeta => {
+export const metaOf = (model: ModelClass): ModelMeta => {
   let meta = metas.get(model);
   if (!meta) metas.set(model, (meta = createMeta(model)));
   return meta;
@@ -108,6 +108,9 @@ export const internals = {} as {
   hydrate<M extends Model>(model: ModelClass<M>, row: Record<string, unknown>, connection: Connection): M;
   bind(model: Model, connection: Connection): void;
 };
+
+/** A query of a model on the connection its declared name resolves to. */
+const queryOf = <M extends Model>(model: ModelClass<M>): ModelQuery<M> => ModelQuery.create(model, resolveConnection(model));
 
 const isFillable = (model: typeof Model, key: string) => {
   if (model.fillable.includes(key)) return true;
@@ -511,7 +514,7 @@ export class Model {
 
   /** A query for this model's row, ignoring global scopes, on the database (and pinned transaction) it uses. */
   #keyed(): ModelQuery<this> {
-    const model = this.#model as ModelClass<this>;
+    const model = this.#model as unknown as ModelClass<this>;
     const transaction = this.#transaction;
     const connection = transaction?.connection ?? this.#connection ?? resolveConnection(model);
     return ModelQuery.create(model, connection, transaction).withoutGlobalScopes().whereKey(this.#originalKey());
@@ -611,11 +614,9 @@ export class Model {
   }
 
   static all<M extends Model>(this: ModelClass<M>): Promise<M[]> {
-    return this.query().get();
+    return queryOf(this).get();
   }
 
-  static where<M extends Model>(this: ModelClass<M>, callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
-  static where<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>): ModelQuery<M>;
   static where<M extends Model, K extends ColumnOf<M>>(this: ModelClass<M>, column: K, value: WhereValue<M, K>): ModelQuery<M>;
   static where<M extends Model, K extends ColumnOf<M>>(
     this: ModelClass<M>,
@@ -623,8 +624,11 @@ export class Model {
     operator: Op,
     value: WhereValue<M, K>
   ): ModelQuery<M>;
+  static where<M extends Model>(this: ModelClass<M>, callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
+  static where<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>): ModelQuery<M>;
   static where<M extends Model>(this: ModelClass<M>, ...args: unknown[]): ModelQuery<M> {
-    return (this.query().where as (...args: unknown[]) => ModelQuery<M>)(...args);
+    const query = queryOf(this);
+    return (query.where as (...args: unknown[]) => ModelQuery<M>).apply(query, args);
   }
 
   static whereIn<M extends Model, K extends ColumnOf<M>>(
@@ -632,7 +636,7 @@ export class Model {
     column: K,
     values: readonly WhereValue<M, K>[] | QueryBuilder<any> | ModelQuery<any>
   ): ModelQuery<M> {
-    return this.query().whereIn(column, values);
+    return queryOf(this).whereIn(column, values);
   }
 
   static whereNotIn<M extends Model, K extends ColumnOf<M>>(
@@ -640,95 +644,95 @@ export class Model {
     column: K,
     values: readonly WhereValue<M, K>[] | QueryBuilder<any> | ModelQuery<any>
   ): ModelQuery<M> {
-    return this.query().whereNotIn(column, values);
+    return queryOf(this).whereNotIn(column, values);
   }
 
   static whereNull<M extends Model>(this: ModelClass<M>, column: ColumnOf<M>): ModelQuery<M> {
-    return this.query().whereNull(column);
+    return queryOf(this).whereNull(column);
   }
 
   static whereNotNull<M extends Model>(this: ModelClass<M>, column: ColumnOf<M>): ModelQuery<M> {
-    return this.query().whereNotNull(column);
+    return queryOf(this).whereNotNull(column);
   }
 
   static whereKey<M extends Model>(this: ModelClass<M>, id: unknown): ModelQuery<M> {
-    return this.query().whereKey(id);
+    return queryOf(this).whereKey(id);
   }
 
   static orderBy<M extends Model>(this: ModelClass<M>, column: ColumnOf<M>, direction?: "asc" | "desc"): ModelQuery<M> {
-    return this.query().orderBy(column, direction);
+    return queryOf(this).orderBy(column, direction);
   }
 
   static latest<M extends Model>(this: ModelClass<M>, column?: ColumnOf<M>): ModelQuery<M> {
-    return this.query().latest(column);
+    return queryOf(this).latest(column);
   }
 
   static oldest<M extends Model>(this: ModelClass<M>, column?: ColumnOf<M>): ModelQuery<M> {
-    return this.query().oldest(column);
+    return queryOf(this).oldest(column);
   }
 
   static select<M extends Model>(this: ModelClass<M>, ...columns: (ColumnOf<M> | "*")[]): ModelQuery<M> {
-    return this.query().select(...columns);
+    return queryOf(this).select(...columns);
   }
 
   static limit<M extends Model>(this: ModelClass<M>, count: number): ModelQuery<M> {
-    return this.query().limit(count);
+    return queryOf(this).limit(count);
   }
 
   static withTrashed<M extends Model>(this: ModelClass<M>): ModelQuery<M> {
-    return this.query().withTrashed();
+    return queryOf(this).withTrashed();
   }
 
   static onlyTrashed<M extends Model>(this: ModelClass<M>): ModelQuery<M> {
-    return this.query().onlyTrashed();
+    return queryOf(this).onlyTrashed();
   }
 
   static withoutGlobalScope<M extends Model>(this: ModelClass<M>, ...names: string[]): ModelQuery<M> {
-    return this.query().withoutGlobalScope(...names);
+    return queryOf(this).withoutGlobalScope(...names);
   }
 
   static withoutGlobalScopes<M extends Model>(this: ModelClass<M>, names?: readonly string[]): ModelQuery<M> {
-    return this.query().withoutGlobalScopes(names);
+    return queryOf(this).withoutGlobalScopes(names);
   }
 
   static find<M extends Model>(this: ModelClass<M>, id: unknown): Promise<M | undefined>;
   static find<M extends Model>(this: ModelClass<M>, ids: readonly unknown[]): Promise<M[]>;
   static find<M extends Model>(this: ModelClass<M>, id: unknown): Promise<M | undefined | M[]> {
-    return this.query().find(id as any);
+    return queryOf(this).find(id as any);
   }
 
   static findOrFail<M extends Model>(this: ModelClass<M>, id: unknown): Promise<M>;
   static findOrFail<M extends Model>(this: ModelClass<M>, ids: readonly unknown[]): Promise<M[]>;
   static findOrFail<M extends Model>(this: ModelClass<M>, id: unknown): Promise<M | M[]> {
-    return this.query().findOrFail(id as any);
+    return queryOf(this).findOrFail(id as any);
   }
 
   static findMany<M extends Model>(this: ModelClass<M>, ids: readonly unknown[]): Promise<M[]> {
-    return this.query().findMany(ids);
+    return queryOf(this).findMany(ids);
   }
 
   static first<M extends Model>(this: ModelClass<M>): Promise<M | undefined> {
-    return this.query().first();
+    return queryOf(this).first();
   }
 
   static firstOrFail<M extends Model>(this: ModelClass<M>): Promise<M> {
-    return this.query().firstOrFail();
+    return queryOf(this).firstOrFail();
   }
 
   static count<M extends Model>(this: ModelClass<M>, column?: ColumnOf<M> | "*"): Promise<number> {
-    return this.query().count(column);
+    return queryOf(this).count(column);
   }
 
   static exists<M extends Model>(this: ModelClass<M>): Promise<boolean> {
-    return this.query().exists();
+    return queryOf(this).exists();
   }
 
   static pluck<M extends Model, K extends ColumnOf<M>>(this: ModelClass<M>, column: K): Promise<ValueOf<M, K>[]> {
-    return this.query().pluck(column);
+    return queryOf(this).pluck(column);
   }
 
   static paginate<M extends Model>(this: ModelClass<M>, options?: { page?: number; perPage?: number }): Promise<Page<M>> {
-    return this.query().paginate(options);
+    return queryOf(this).paginate(options);
   }
 
   static chunkById<M extends Model>(
@@ -736,11 +740,11 @@ export class Model {
     count: number,
     callback: (models: M[], page: number) => unknown
   ): Promise<boolean> {
-    return this.query().chunkById(count, callback);
+    return queryOf(this).chunkById(count, callback);
   }
 
   static lazyById<M extends Model>(this: ModelClass<M>, count?: number): AsyncGenerator<M, void, undefined> {
-    return this.query().lazyById(count);
+    return queryOf(this).lazyById(count);
   }
 
   // Static: writes
@@ -752,27 +756,27 @@ export class Model {
 
   /** Fills a new model and saves it. */
   static create<M extends Model>(this: ModelClass<M>, attributes: Attributes<M> = {}): Promise<M> {
-    return this.query().create(attributes);
+    return queryOf(this).create(attributes);
   }
 
   /** The first model matching `attributes`, or a new unsaved one filled with them and `values`. */
   static firstOrNew<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>, values?: Attributes<M>): Promise<M> {
-    return this.query().firstOrNew(attributes, values);
+    return queryOf(this).firstOrNew(attributes, values);
   }
 
   /** The first model matching `attributes`, or one created with them and `values`. */
   static firstOrCreate<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>, values?: Attributes<M>): Promise<M> {
-    return this.query().firstOrCreate(attributes, values);
+    return queryOf(this).firstOrCreate(attributes, values);
   }
 
   /** Creates the model, or, when a unique key already has it, returns the existing one. */
   static createOrFirst<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>, values?: Attributes<M>): Promise<M> {
-    return this.query().createOrFirst(attributes, values);
+    return queryOf(this).createOrFirst(attributes, values);
   }
 
   /** Updates the first model matching `attributes` with `values`, or creates it with both. */
   static updateOrCreate<M extends Model>(this: ModelClass<M>, attributes: Attributes<M>, values?: Attributes<M>): Promise<M> {
-    return this.query().updateOrCreate(attributes, values);
+    return queryOf(this).updateOrCreate(attributes, values);
   }
 
   /** Inserts rows, or updates the ones whose unique key exists, without model events. */
@@ -782,7 +786,7 @@ export class Model {
     uniqueBy: AttributeName<M> | readonly AttributeName<M>[],
     update?: readonly AttributeName<M>[]
   ): Promise<number> {
-    return this.query().upsert(values, uniqueBy, update);
+    return queryOf(this).upsert(values, uniqueBy, update);
   }
 
   /** Loads the models with these keys and deletes each, firing their events. Returns how many were deleted. */
@@ -790,7 +794,7 @@ export class Model {
     const list = Array.isArray(ids) ? ids : [ids];
     if (!list.length) return 0;
     let deleted = 0;
-    for (const model of await this.query().findMany(list)) if (await model.delete()) deleted++;
+    for (const model of await queryOf(this).findMany(list)) if (await model.delete()) deleted++;
     return deleted;
   }
 

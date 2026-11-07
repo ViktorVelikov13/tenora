@@ -242,18 +242,19 @@ export class ModelQuery<M extends Model> implements PromiseLike<M[]> {
    * `where("name", "ada")`, `where("votes", ">", 100)`, `where({ name: "ada", active: true })`, or a callback for a
    * group in parentheses: `where((q) => q.where("a", 1).orWhere("b", 2))`. Attribute names are mapped to columns.
    */
-  where(callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
-  where(attributes: Attributes<M>): ModelQuery<M>;
+  // The column forms come first: they are the common case, and overloads that fail first cost compile time.
   where<K extends ColumnOf<M>>(column: K, value: WhereValue<M, K>): ModelQuery<M>;
   where<K extends ColumnOf<M>>(column: K, operator: Op, value: WhereValue<M, K>): ModelQuery<M>;
+  where(callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
+  where(attributes: Attributes<M>): ModelQuery<M>;
   where(...args: unknown[]): ModelQuery<M> {
     return this.#where("where", args);
   }
 
-  orWhere(callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
-  orWhere(attributes: Attributes<M>): ModelQuery<M>;
   orWhere<K extends ColumnOf<M>>(column: K, value: WhereValue<M, K>): ModelQuery<M>;
   orWhere<K extends ColumnOf<M>>(column: K, operator: Op, value: WhereValue<M, K>): ModelQuery<M>;
+  orWhere(callback: (query: ModelQuery<M>) => ModelQuery<M>): ModelQuery<M>;
+  orWhere(attributes: Attributes<M>): ModelQuery<M>;
   orWhere(...args: unknown[]): ModelQuery<M> {
     return this.#where("orWhere", args);
   }

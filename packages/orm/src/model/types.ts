@@ -38,11 +38,38 @@ export type WhereValue<M, K> = Comparable<ValueOf<M, K>> | null | RawSql | Query
 /** Values for a mass update: attributes, or raw fragments such as `sql\`votes + 1\``. */
 export type UpdateValues<M> = { [K in keyof Fields<M>]?: Fields<M>[K] | null | RawSql };
 
+/** The static configuration every model class has. */
+type ModelConfig = Pick<
+  typeof Model,
+  | "prototype"
+  | "table"
+  | "primaryKey"
+  | "incrementing"
+  | "connection"
+  | "fillable"
+  | "guarded"
+  | "hidden"
+  | "visible"
+  | "appends"
+  | "casts"
+  | "timestamps"
+  | "CREATED_AT"
+  | "UPDATED_AT"
+  | "softDeletes"
+  | "DELETED_AT"
+  | "naming"
+  | "strict"
+  | "perPage"
+  | "globalScopes"
+>;
+
 /**
  * A model class whose instances are M. Static methods take `this: ModelClass<M>`, so `User.query()` is a query of
- * User without repeating the type.
+ * User without repeating the type. It lists the static configuration rather than `typeof Model`, so checking a call
+ * compares a few fields instead of every static method, which keeps large model sets fast to compile.
  */
-export type ModelClass<M extends Model = Model> = (new (attributes?: Record<string, unknown>) => M) & typeof Model;
+export type ModelClass<M extends Model = Model> = (new (attributes?: Record<string, unknown>) => M) &
+  ModelConfig & { readonly name: string };
 
 /**
  * The casts a model may declare, checked against its declared fields:
