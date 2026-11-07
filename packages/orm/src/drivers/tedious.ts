@@ -36,6 +36,9 @@ const CODE_KINDS: Record<string, DatabaseErrorKind> = {
   ESOCKET: "connection_lost",
   ECLOSE: "connection_lost",
   ECONNRESET: "connection_lost",
+  // A request that hit tedious's requestTimeout was cancelled mid-flight; the connection is closed, not reused, and a
+  // timed-out COMMIT has an unknown outcome.
+  ETIMEOUT: "connection_lost",
 };
 
 const classify = (error: unknown): DatabaseErrorKind | undefined => {
