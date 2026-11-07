@@ -12,6 +12,8 @@ import { loadEngines } from "./support/engines.mjs";
 import { assertFailed, assertOk, createdFile, createProject } from "./support/project.mjs";
 
 const TENORA_KEY = "tenora-test-cipher-key";
+// "Enc!Pw#2-tenora" encrypted with TENORA_KEY by crypto-js 4.2.0, as Tenora 0.3 stored it.
+const LEGACY_ENC_PASSWORD = "U2FsdGVkX18DyfwYG55+0AtEmJVcMdiLWW/6SjVlV1g=";
 const REGISTRY = "tenora_tenants";
 
 const seedInserting = (table, column, value) =>
@@ -404,7 +406,7 @@ describe("full lifecycle against a real database", () => {
 
         const [record] = await observe(baseDb)(REGISTRY).where({ id: tenants.enc });
         assert.equal(record.password, null, "plaintext password must not be stored");
-        assert.notEqual(record.encrypted_password, passwords.enc);
+        assert.match(record.encrypted_password, /^tenora:v1:/);
         assert.equal(decryptPassword(record.encrypted_password, TENORA_KEY), passwords.enc);
       });
 
@@ -490,6 +492,23 @@ describe("full lifecycle against a real database", () => {
         for (const tenantId of allTenants) {
           assert.match(result.stdout, new RegExp(`Tenant ${tenantId}: up to date`));
         }
+      });
+
+      it("migrate:tenants still connects with a password stored by Tenora 0.3", { skip: !engine.perTenantUsers }, async () => {
+        const entry = () => observe(baseDb)(REGISTRY).where({ id: tenants.enc });
+        const [record] = await entry();
+        await entry().update({ encrypted_password: LEGACY_ENC_PASSWORD });
+        try {
+          const result = assertOk(cli(["migrate:tenants"]));
+          assert.match(result.stdout, new RegExp(`Tenant ${tenants.enc}: up to date`));
+        } finally {
+          await entry().update({ encrypted_password: record.encrypted_password });
+        }
+      });
+
+      it("migrate:tenants with the wrong TENORA_KEY fails with a clear error", () => {
+        const result = assertFailed(project.tenora(["migrate:tenants"], { env: { TENORA_KEY: "not-the-key" } }));
+        assert.match(result.output, /could not decrypt the tenant password/);
       });
 
       it("rollback:tenants undoes the last batch for every tenant and keeps earlier ones", async () => {

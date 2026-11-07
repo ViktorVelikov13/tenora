@@ -14,7 +14,7 @@
     "package.json"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsdown",
     "prepack": "npm -w @tenora/core run build && npm run build",
     "lint": "echo 'add your linter'"
   },
@@ -29,14 +29,13 @@
   "dependencies": {
     "@tenora/core": "^0.3.0",
     "commander": "^15.0.0",
-    "crypto-js": "^4.2.0",
     "knex": "^3.3.0",
     "objection": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "tsup": "^9.0.0",
-    "typescript": "^6.0.3"
+    "tsdown": "^0.23.7",
+    "typescript": "^7.0.2"
   },
   "publishConfig": {
     "access": "public"

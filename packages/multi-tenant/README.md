@@ -124,6 +124,8 @@ or import the config and pass it directly to `createTenoraFactory(...)`.
 Encryption defaults:
 - If `encryptPassword`/`decryptPassword` are not provided, Tenora will use `process.env.TENORA_KEY` (if set).
 - If no key is present, Tenora stores plaintext passwords in the registry.
+- `encryptPassword` uses AES-256-GCM from Node's built-in `crypto` and writes values starting with `tenora:v1:`.
+- `decryptPassword` also reads values written by Tenora 0.3 and earlier (they start with `U2FsdGVkX1`), so existing registry entries keep working without re-encrypting. Tenora 0.3 cannot read the new format, so downgrading after creating tenants needs those passwords re-encrypted.
 
 SQLite notes:
 - For SQLite, set `base.database` to a file path or provide `base.connection.filename`.
@@ -176,6 +178,7 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 ## Troubleshooting
 - **“database already exists”**: a previous `createTenantDb` may have failed partway, leaving a tenant that is not in the registry. Remove it with `tenora drop:tenant <id> --force --allow-unregistered`, or pick a new ID.
 - **“password authentication failed”**: ensure `passwordProvider` returns the plain password for that tenant.
+- **“could not decrypt the tenant password”**: the cipher key (`TENORA_KEY` or your own) is not the one the password was encrypted with.
 - **Migrations not running**: verify `tenant.migrationsDir` is correct and reachable from where you invoke the CLI.
 - **Pooling issues**: adjust `tenant.pool` or `base.pool` in the factory options.
 
