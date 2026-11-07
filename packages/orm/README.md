@@ -187,3 +187,91 @@ What happens, and why:
   `trx.run(fn)`, `trx.commit()`, `trx.rollback()`.
 
 On SQLite there is one connection, so a query outside an open transaction waits until it ends.
+
+## Migrations
+
+A migration is a file that exports `up` and `down`. Both get a context whose `db` is the connection; every query on it
+joins the migration's transaction.
+
+```ts
+// migrations/20261107120000_create_orders.ts
+import { migration, sql } from "@tenora/orm";
+
+export default migration({
+  async up({ db }) {
+    await db.raw(sql`create table orders (id integer primary key, total integer not null)`);
+    await db.table("settings").insert({ key: "orders", value: "on" });
+  },
+  async down({ db }) {
+    await db.raw(sql`drop table orders`);
+  },
+});
+```
+
+```ts
+import { createMigrator } from "@tenora/orm";
+
+const migrator = createMigrator(db, { directory: "migrations" });
+
+await migrator.latest();                 // { batch: 3, migrations: ["20261107120000_create_orders"] }
+await migrator.rollback();               // the last batch, newest first: { batches: [3], migrations: [...] }
+await migrator.rollback({ step: 2 });    // the last two migrations, across batches
+await migrator.rollback({ all: true });
+await migrator.status();                 // { ran: [{ name, batch, migratedAt, source, file }], pending: [{ name, file }] }
+await migrator.forceUnlock();            // after a run was killed while it held the lock
+```
+
+Files can be `.js`, `.mjs`, `.cjs` or `.ts` (or `.mts` and `.cts`; Node strips the types), ESM or CommonJS. Besides
+`export default migration({...})` and `module.exports = migration({...})`, plain `up` and `down` exports work, and so
+does Knex's `exports.config = { transaction: false }`. Files from all `directories` run as one list, sorted by file name
+the way Knex sorts them (by code unit, so `B` comes before `a`); a timestamp prefix keeps them in the order they were
+written.
+
+What happens, and why:
+
+- The bookkeeping lives in the database itself: `tenora_migrations (id, name, batch, migrated_at, source)` and
+  `tenora_migrations_lock`, created on first use. `table: "app_migrations"` renames both. Knex's `knex_migrations` is
+  never read or written.
+- Names are stored without their extension, so renaming a migration from `.js` to `.ts` does not make it new again.
+- Each `latest()` records its migrations as one batch, and `rollback()` undoes the last batch, as in Knex. `step: n`
+  undoes the last n migrations instead, as in Laravel.
+- On Postgres, SQLite and SQL Server each migration runs in its own transaction, together with its record: one that
+  fails is undone and not recorded. MySQL and MariaDB commit DDL as they run it, so there a migration that fails halfway
+  keeps what it did before the failure; keep MySQL migrations to one change each.
+- `migration({ transaction: false, ... })` runs a migration outside a transaction, for statements a database refuses
+  inside one, such as Postgres's `create index concurrently`.
+- A failing migration stops the run with a `MigrationError` that names the file (`migration`, `file`, `direction`, and
+  the database's error as `cause`). The migrations before it in the batch stay recorded.
+- One migrator runs at a time per database. The lock is a row in the lock table, not a Postgres advisory lock, which
+  breaks under PgBouncer. A second migrator gets a `MigrationLockError`; if a run was killed while it held the lock,
+  `forceUnlock()` releases it.
+- `rollback()` first checks that every migration it would undo has a `down` and still has its file, so it never stops
+  halfway for either reason. A migration pruned into a schema dump cannot be rolled back; give a one-way migration an
+  empty `down` to allow it.
+- The migrator runs outside any transaction open around the call: the lock and each migration's transaction are its own.
+  On SQLite that transaction holds the only connection, so do not call the migrator inside one.
+- `context: (db) => ({ ... })` adds to what `up` and `down` receive, next to `db`.
+
+### Seeds
+
+```ts
+// seeds/01_users.ts
+import { seed } from "@tenora/orm";
+
+export default seed(async ({ db }) => {
+  await db.table("users").insert([{ name: "ada" }, { name: "bob" }]);
+});
+```
+
+```ts
+import { createSeeder } from "@tenora/orm";
+
+const seeder = createSeeder(db, { directory: "seeds" });
+await seeder.run();                        // { seeds: ["01_users", "02_teams"] }
+await seeder.run({ only: "02_teams" });    // with or without the extension
+```
+
+Seeds run in file name order, each in its own transaction on every database: they change data, which all five can roll
+back. `seed(fn, { transaction: false })` opts out. `exports.seed = async ({ db }) => ...` and a default-exported
+function work too. Seeds are not recorded, so each `run()` runs them all again. A seed that throws stops the run with a
+`SeedError`; the seeds before it stay committed.
