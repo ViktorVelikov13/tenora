@@ -37,6 +37,17 @@ const resultKey = (column: string) => {
 /** The table a write goes to, without the alias a select may give it. */
 const baseTable = (name: string) => name.split(/\s+as\s+/i)[0].trim();
 
+/**
+ * Builders never change in place, so a callback has to return the builder it was given. Laravel's callbacks mutate
+ * instead, so a block body without `return` is the likely mistake, and this says so instead of failing later.
+ */
+const returned = <T>(result: unknown, isExpected: (value: unknown) => value is T, where: string): T => {
+  if (isExpected(result)) return result;
+  throw new Error(
+    `Tenora: the ${where} callback must return the builder it was given. Every method returns a new one, so write (q) => q.where(...), not (q) => { q.where(...); }.`
+  );
+};
+
 /** Splits `(first, second)` and `(first, operator, second)` the way Laravel's `on` and `whereColumn` read them. */
 const columnPair = (args: unknown[]): { first: string; operator: Operator; second: string } => {
   const [first, operatorOrSecond, second] = args;
@@ -44,6 +55,20 @@ const columnPair = (args: unknown[]): { first: string; operator: Operator; secon
   return args.length === 2
     ? { first, operator: "=", second: String(operatorOrSecond) }
     : { first, operator: normalizeOperator(operatorOrSecond), second: String(second) };
+};
+
+/** `(column, value)` or `(column, operator, value)`; comparing with null means IS NULL or IS NOT NULL. */
+const valueCondition = (args: unknown[], boolean: Conjunction): Where => {
+  const [column, second, third] = args;
+  if (typeof column !== "string") throw new Error("Tenora: a condition needs a column name.");
+  const operator = args.length === 2 ? "=" : normalizeOperator(second);
+  const value = args.length === 2 ? second : third;
+  // where("deleted_at", null) means IS NULL, as in Eloquent; "= NULL" never matches anything.
+  if (value === null && (operator === "=" || operator === "!=" || operator === "<>")) {
+    return { type: "null", column, not: operator !== "=", boolean };
+  }
+  if (value === undefined) throw new Error(`Tenora: where("${column}") got undefined; pass null to compare with NULL.`);
+  return { type: "basic", column, operator, value, boolean };
 };
 
 /**
@@ -74,19 +99,13 @@ export class JoinClause {
   where(column: string, value: unknown): JoinClause;
   where(column: string, operator: Operator | (string & {}), value: unknown): JoinClause;
   where(...args: unknown[]): JoinClause {
-    const [column, second, third] = args as [string, unknown, unknown];
-    return args.length === 2
-      ? this.#add({ type: "basic", column, operator: "=", value: second, boolean: "and" })
-      : this.#add({ type: "basic", column, operator: normalizeOperator(second), value: third, boolean: "and" });
+    return this.#add(valueCondition(args, "and"));
   }
 
   orWhere(column: string, value: unknown): JoinClause;
   orWhere(column: string, operator: Operator | (string & {}), value: unknown): JoinClause;
   orWhere(...args: unknown[]): JoinClause {
-    const [column, second, third] = args as [string, unknown, unknown];
-    return args.length === 2
-      ? this.#add({ type: "basic", column, operator: "=", value: second, boolean: "or" })
-      : this.#add({ type: "basic", column, operator: normalizeOperator(second), value: third, boolean: "or" });
+    return this.#add(valueCondition(args, "or"));
   }
 
   whereIn(column: string, values: readonly unknown[]): JoinClause {
@@ -176,8 +195,8 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
     callback: (query: QueryBuilder<R>, value: Truthy<V>) => QueryBuilder<R>,
     otherwise?: (query: QueryBuilder<R>) => QueryBuilder<R>
   ): QueryBuilder<R> {
-    if (value) return callback(this, value as Truthy<V>);
-    return otherwise ? otherwise(this) : this;
+    if (value) return returned(callback(this, value as Truthy<V>), isBuilder<R>, "when()");
+    return otherwise ? returned(otherwise(this), isBuilder<R>, "when()") : this;
   }
 
   // Selecting
@@ -206,7 +225,9 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
   #join(type: Join["type"], source: Source, args: unknown[]): QueryBuilder<R> {
     let conditions: readonly Where[] = [];
     if (type !== "cross") {
-      if (typeof args[0] === "function") conditions = (args[0] as JoinCallback)(new JoinClause()).conditions;
+      if (typeof args[0] === "function") {
+        conditions = returned((args[0] as JoinCallback)(new JoinClause()), isJoinClause, "join").conditions;
+      }
       else conditions = [{ type: "column", ...columnPair(args), boolean: "and" }];
     }
     return this.#with({ joins: [...this.state.joins, { type, source, conditions }] });
@@ -247,23 +268,19 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
   #where(boolean: Conjunction, args: unknown[]): QueryBuilder<R> {
     const [column, second, third] = args;
     if (typeof column === "function") {
-      const nested = (column as (query: QueryBuilder<R>) => QueryBuilder<R>)(
-        new QueryBuilder<R>(this.connection, emptySelect(this.state.from), undefined)
+      const nested = returned(
+        (column as (query: QueryBuilder<R>) => unknown)(
+          new QueryBuilder<R>(this.connection, emptySelect(this.state.from), undefined)
+        ),
+        isBuilder<R>,
+        "where()"
       );
       if (!nested.state.wheres.length) return this;
       return this.#addWhere({ type: "nested", wheres: nested.state.wheres, boolean });
     }
     if (typeof column !== "string") throw new Error("Tenora: where() needs a column name or a callback.");
-    const operator = args.length === 2 ? "=" : normalizeOperator(second);
-    const value = args.length === 2 ? second : third;
-    // where("deleted_at", null) means IS NULL, as in Eloquent; "= NULL" never matches anything.
-    if (value === null && (operator === "=" || operator === "!=" || operator === "<>")) {
-      return this.#addWhere({ type: "null", column, not: operator !== "=", boolean });
-    }
-    if (value === undefined) {
-      throw new Error(`Tenora: where("${column}") got undefined; pass null to compare with NULL.`);
-    }
-    return this.#addWhere({ type: "basic", column, operator, value: this.#operand(value), boolean });
+    const where = valueCondition(args, boolean);
+    return this.#addWhere(where.type === "basic" ? { ...where, value: this.#operand(where.value) } : where);
   }
 
   /**
@@ -404,8 +421,12 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
 
   // Ordering and paging
 
-  orderBy(column: Column<R> | RawSql, direction: "asc" | "desc" = "asc"): QueryBuilder<R> {
-    if (column instanceof RawSql) return this.orderByRaw(column);
+  orderBy(column: Column<R> | RawSql, direction?: "asc" | "desc"): QueryBuilder<R> {
+    if (column instanceof RawSql) {
+      if (direction) throw new Error("Tenora: a raw orderBy carries its own direction: orderBy(sql`... desc`).");
+      return this.orderByRaw(column);
+    }
+    direction ??= "asc";
     if (direction !== "asc" && direction !== "desc") throw new Error(`Tenora: unknown order direction "${direction}".`);
     return this.#with({ orders: [...this.state.orders, { type: "column", column, direction }] });
   }
@@ -672,3 +693,6 @@ export class QueryBuilder<R extends Row = Row> implements PromiseLike<R[]> {
     return result.affectedRows;
   }
 }
+
+const isBuilder = <R extends Row>(value: unknown): value is QueryBuilder<R> => value instanceof QueryBuilder;
+const isJoinClause = (value: unknown): value is JoinClause => value instanceof JoinClause;

@@ -250,6 +250,26 @@ describe("compiling queries", () => {
     await assert.rejects(db.postgres.fromSub(db.postgres.table("a"), "t").delete(), /needs a table/);
   });
 
+  it("explains a callback that forgot to return the builder, as Laravel's mutating callbacks would", () => {
+    const users = db.postgres.table("users");
+    assert.throws(() => users.where((q) => { q.where("a", 1); }), /must return the builder/);
+    assert.throws(() => users.join("teams", (j) => { j.on("teams.id", "users.team_id"); }), /must return the builder/);
+    assert.throws(() => users.when(true, (q) => { q.where("a", 1); }), /must return the builder/);
+  });
+
+  it("treats null in a join condition as IS NULL, as everywhere else", () => {
+    const query = db.postgres.table("users").leftJoin("bans", (j) => j.on("bans.user_id", "users.id").where("bans.lifted_at", null));
+    assert.equal(
+      query.toSql().sql,
+      'select * from "users" left join "bans" on ("bans"."user_id" = "users"."id" and "bans"."lifted_at" is null)'
+    );
+  });
+
+  it("refuses a direction next to a raw order, which carries its own", () => {
+    assert.throws(() => db.postgres.table("users").orderBy(sql`lower(name)`, "desc"), /carries its own direction/);
+    assert.equal(db.postgres.table("users").orderBy(sql`lower(name) desc`).toSql().sql, 'select * from "users" order by lower(name) desc');
+  });
+
   it("applies when() only for truthy values, and passes the value on", () => {
     const search = (term) => db.postgres.table("users").when(term, (q, t) => q.where("name", "like", `${t}%`)).toSql();
     assert.equal(search("ad").sql, 'select * from "users" where "name" like $1');

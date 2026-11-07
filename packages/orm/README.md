@@ -29,6 +29,8 @@ Install the driver yourself (`npm install pg`). It is loaded from your project, 
 
 The builder follows Laravel's: if you know `DB::table()`, you know this. Every method returns a new builder, so a base
 query can be reused, and awaiting a builder runs it. `toSql()` shows the SQL and parameters without running anything.
+For the same reason a callback returns the builder it is given, `(q) => q.where(...)`, rather than changing it in place
+as Laravel's do; forgetting the `return` gets a clear error.
 
 ```ts
 const users = await db.table("users").where("active", true).orderBy("name").limit(20);
