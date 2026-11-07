@@ -1,11 +1,21 @@
 import type { Connection } from "../connection";
+import type { SchemaBuilder } from "../schema/builder";
+import type { KnexSchemaBuilder } from "../schema/knex/builder";
 
 /**
- * What `up`, `down` and seeds receive. Queries on `db` join the migration's transaction on their own. An interface,
- * so later additions (the schema builder) can extend it; `context` options add to it at runtime.
+ * What `up`, `down` and seeds receive. Queries on `db` and changes made with `schema` join the migration's transaction
+ * on their own. `context` options add to it at runtime.
  */
 export interface MigrationContext {
   db: Connection;
+  /** the schema builder: `schema.create("orders", (t) => …)` */
+  schema: SchemaBuilder;
+}
+
+/** What a migration converted from 0.x receives: `schema` is the Knex-compatible builder, `schema.createTable(…)`. */
+export interface KnexMigrationContext {
+  db: Connection;
+  schema: KnexSchemaBuilder;
 }
 
 /** Builds what migrations and seeds receive besides `db`, once for each file. */
@@ -20,6 +30,8 @@ export interface MigrationDefinition<C extends object = MigrationContext> {
    * as they run it.
    */
   transaction?: boolean;
+  /** "knex" gives `schema` Knex's method names and DDL, for migrations converted from 0.x */
+  compat?: "knex";
 }
 
 export type Migration<C extends object = MigrationContext> = Readonly<MigrationDefinition<C>>;
@@ -36,8 +48,15 @@ export type Seed<C extends object = MigrationContext> = {
   readonly transaction?: boolean;
 };
 
-/** A migration: `export default migration({ async up({ db }) { … }, async down({ db }) { … } })`. */
-export const migration = <C extends object = MigrationContext>(definition: MigrationDefinition<C>): Migration<C> => {
+/**
+ * A migration: `export default migration({ async up({ schema }) { … }, async down({ schema }) { … } })`. With
+ * `compat: "knex"`, `schema` is the Knex-compatible builder.
+ */
+export function migration<C extends object = KnexMigrationContext>(
+  definition: MigrationDefinition<C> & { compat: "knex" }
+): Migration<C>;
+export function migration<C extends object = MigrationContext>(definition: MigrationDefinition<C>): Migration<C>;
+export function migration<C extends object>(definition: MigrationDefinition<C>): Migration<C> {
   if (typeof definition?.up !== "function") throw new Error("Tenora: migration() needs an up function.");
   if (definition.down !== undefined && typeof definition.down !== "function") {
     throw new Error("Tenora: a migration's down must be a function.");
@@ -45,8 +64,22 @@ export const migration = <C extends object = MigrationContext>(definition: Migra
   if (definition.transaction !== undefined && typeof definition.transaction !== "boolean") {
     throw new Error("Tenora: a migration's transaction option must be true or false.");
   }
-  return Object.freeze({ up: definition.up, down: definition.down, transaction: definition.transaction });
-};
+  if (definition.compat !== undefined && definition.compat !== "knex") {
+    throw new Error('Tenora: a migration\'s compat option can only be "knex".');
+  }
+  return Object.freeze({
+    up: definition.up,
+    down: definition.down,
+    transaction: definition.transaction,
+    compat: definition.compat,
+  });
+}
+
+/** What a migration or seed receives: the Knex-compatible schema builder for `compat: "knex"`. */
+export const contextFor = (db: Connection, compat: "knex" | undefined) => ({
+  db,
+  schema: compat === "knex" ? db.schema.knex : db.schema,
+});
 
 /** A seed: `export default seed(async ({ db }) => { … })`. */
 export const seed = <C extends object = MigrationContext>(run: SeedFunction<C>, options: SeedOptions = {}): Seed<C> => {
@@ -91,7 +124,9 @@ export const toMigration = (module: Record<string, unknown>, file: string): Migr
   }
   // Bound, so a module's functions can still reach each other through `this`, as they could under Knex.
   const { up, down } = exports as { up: Migration["up"]; down?: Migration["down"] };
-  return { up: up.bind(exports), down: down?.bind(exports), transaction: transactionOption(exports, file) };
+  const compat = exports.compat;
+  if (compat !== undefined && compat !== "knex") throw new Error(`Tenora: compat in ${file} can only be "knex".`);
+  return { up: up.bind(exports), down: down?.bind(exports), transaction: transactionOption(exports, file), compat };
 };
 
 /** The seed a loaded module exports: `seed(fn)`, a `seed` function, or a default function. */

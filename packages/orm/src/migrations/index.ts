@@ -2,6 +2,7 @@ export {
   migration,
   seed,
   type ContextFactory,
+  type KnexMigrationContext,
   type Migration,
   type MigrationContext,
   type MigrationDefinition,

@@ -1,5 +1,5 @@
 import { type Connection, withoutTransaction } from "../connection";
-import { type ContextFactory, type Migration, type MigrationContext, toMigration } from "./definitions";
+import { type ContextFactory, contextFor, type Migration, toMigration } from "./definitions";
 import { MigrationError, MigrationLockError } from "./errors";
 import { importFile, listFiles, resolveDirectories, type SourceFile } from "./files";
 import { ensureTables, type MigrationRow, transactionalDdl } from "./tables";
@@ -254,7 +254,7 @@ export class Migrator {
     const { db } = this;
     const inTransaction = entry.migration.transaction !== false && transactionalDdl(db.dialect);
     const step = async () => {
-      const context: MigrationContext = { db, ...(await this.#context?.(db)) };
+      const context = { ...contextFor(db, entry.migration.compat), ...(await this.#context?.(db)) };
       await entry.migration[direction]!(context);
       await record();
     };

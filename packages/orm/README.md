@@ -323,8 +323,9 @@ rebuild is formatted differently. Not offered: column `comment`, `collate`, `fir
 
 ## Migrations
 
-A migration is a file that exports `up` and `down`. Both get a context whose `db` is the connection; every query on it
-joins the migration's transaction.
+A migration is a file that exports `up` and `down`. Both get a context with `db`, the connection, and `schema`, the
+schema builder; every query and schema change made with them joins the migration's transaction. With
+`migration({ compat: "knex", … })`, `schema` is the Knex-compatible builder instead, for migrations converted from 0.x.
 
 ```ts
 // migrations/20261107120000_create_orders.ts
@@ -383,7 +384,7 @@ What happens, and why:
   empty `down` to allow it.
 - The migrator runs outside any transaction open around the call: the lock and each migration's transaction are its own.
   On SQLite that transaction holds the only connection, so do not call the migrator inside one.
-- `context: (db) => ({ ... })` adds to what `up` and `down` receive, next to `db`.
+- `context: (db) => ({ ... })` adds to what `up` and `down` receive, next to `db` and `schema`.
 
 ### Seeds
 

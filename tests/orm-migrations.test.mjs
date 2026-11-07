@@ -380,6 +380,32 @@ describe("migrations against a real database", () => {
         assert.deepEqual(await recorded("app_migrations"), []);
       });
 
+      it("gives migrations the schema builder, or its Knex-compatible flavour for compat: \"knex\"", async () => {
+        tables("laravel_style", "knex_style");
+        const dir = folder({
+          "001_laravel.mjs": `import { migration } from ${JSON.stringify(ORM_URL)};
+export default migration({
+  async up({ schema }) { await schema.create("laravel_style", (t) => { t.id(); t.string("label").unique(); }); },
+  async down({ schema }) { await schema.drop("laravel_style"); },
+});\n`,
+          "002_knex.cjs": `const { migration } = require(${JSON.stringify(ORM_PATH)});
+module.exports = migration({
+  compat: "knex",
+  up: ({ schema }) => schema.createTable("knex_style", (t) => { t.increments("id").primary(); t.string("label").notNullable(); }),
+  down: ({ schema }) => schema.dropTableIfExists("knex_style"),
+});\n`,
+        });
+        const migrator = createMigrator(db, { directory: dir });
+
+        assert.deepEqual(await migrator.latest(), { batch: 1, migrations: ["001_laravel", "002_knex"] });
+        await db.table("laravel_style").insert({ label: "a" });
+        await db.table("knex_style").insert({ label: "b" });
+        await assert.rejects(db.table("laravel_style").insert({ label: "a" }), /./);
+        await migrator.rollback();
+        assert.equal(await exists("laravel_style"), false);
+        assert.equal(await exists("knex_style"), false);
+      });
+
       it("runs .ts migration files, recorded without their extension", async () => {
         tables("typed");
         const dir = folder({ "001_typed.ts": files.typed("typed"), "001_typed.d.ts": "export {};\n" });

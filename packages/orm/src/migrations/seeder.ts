@@ -1,6 +1,6 @@
 import path from "node:path";
 import { type Connection, withoutTransaction } from "../connection";
-import { type ContextFactory, type MigrationContext, toSeed } from "./definitions";
+import { type ContextFactory, contextFor, toSeed } from "./definitions";
 import { SeedError } from "./errors";
 import { importFile, listFiles, resolveDirectories, type SourceFile } from "./files";
 
@@ -61,7 +61,7 @@ export class Seeder {
       const seeds: string[] = [];
       for (const entry of loaded) {
         const step = async () => {
-          const context: MigrationContext = { db, ...(await this.#context?.(db)) };
+          const context = { ...contextFor(db, undefined), ...(await this.#context?.(db)) };
           await entry.seed.seed(context);
         };
         try {
