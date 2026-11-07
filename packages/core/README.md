@@ -17,6 +17,7 @@ Shared core internals for Tenora packages.
 - Password helpers (`generateTenantPassword`, `encryptPassword`, `decryptPassword`)
 - Config loading helpers (`resolveConfigPath`, `loadConfigModuleSync`, `loadConfigModuleAsync`, `unwrapConfig`)
 - Tenant registry helpers (`ensureRegistryMigration`, `ensureRegistryTable`, `listTenantsFromRegistry`, `upsertTenantInRegistry`, `resolveDecrypt`)
+- Tenant schema dumps (`TenantManager.dumpTenantSchema`, `checkTenantSchemaDump`)
 - CLI implementation modules (`runTenoraCli`, command registration, template/database/config helpers)
 
 ## Installation

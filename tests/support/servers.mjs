@@ -97,6 +97,8 @@ const startLocalMysql = async (root) => {
       `--socket=${path.join(root, "mysql.sock")}`,
       `--pid-file=${path.join(root, "mysql.pid")}`,
       "--mysqlx=OFF",
+      // Lets the non-SUPER tenant user create triggers while binary logging is on.
+      "--log-bin-trust-function-creators=1",
     ],
     { stdio: "ignore" }
   );

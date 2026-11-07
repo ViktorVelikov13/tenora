@@ -4,3 +4,4 @@ export * from "./configLoader";
 export * from "./tenantRegistry";
 export * from "./knexFactory";
 export * from "./cli/program";
+export { checkTenantSchemaDump } from "./factory/schemaFile";

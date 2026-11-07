@@ -25,6 +25,11 @@ const compose = (...composeArgs) =>
 if (useDocker) {
   if (compose("up", "-d", "--wait") !== 0) process.exit(1);
   Object.assign(process.env, DOCKER_URLS);
+  // Dump tools must be at least as new as the server, so run the ones inside each container.
+  const inContainer = (tool) => path.join(repoRoot, "tests/support/docker-dump", `${tool}.mjs`);
+  process.env.TENORA_PG_DUMP ??= inContainer("pg_dump");
+  process.env.TENORA_MYSQLDUMP ??= inContainer("mysqldump");
+  process.env.TENORA_MARIADB_DUMP ??= inContainer("mariadb-dump");
 }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "tenora-db-"));

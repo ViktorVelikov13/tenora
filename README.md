@@ -79,7 +79,7 @@ The tests run the built `tenora` binaries inside a throwaway project and check t
 npm test
 ```
 
-SQLite always runs. Postgres and MySQL run on temporary servers started from local `initdb`/`mysqld` binaries, on random ports, and never touch a database you already have.
+SQLite always runs. Postgres and MySQL run on temporary servers started from local `initdb`/`mysqld` binaries, on random ports, and never touch a database you already have. The schema dump tests also need `pg_dump` and `mysqldump`; without them those tests are skipped locally and fail in CI. In Docker mode they run inside each database container, so their versions always match.
 
 To test the newest Postgres, MySQL, MariaDB and SQL Server versions in Docker:
 

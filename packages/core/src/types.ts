@@ -45,6 +45,12 @@ export type TenantConfig = {
   databaseSuffix?: string;
   /** Optional tenant database name/filename resolver */
   databaseName?: (tenantId: string) => string;
+  /**
+   * Schema dump that new tenant databases load before their migrations run, written by
+   * `tenora schema:dump:tenants`. Defaults to `schema/tenant-<dialect>.sql` next to the migrations
+   * directory; `false` turns loading it off.
+   */
+  schemaFile?: string | false;
   /** custom pool settings for tenant connections */
   pool?: Knex.PoolConfig;
   /** override ssl option for tenant connections */
@@ -87,6 +93,8 @@ export interface TenantManager {
   createTenantDb(tenantId: string, password?: string): Promise<void>;
   /** permanently deletes the tenant database, its user and its registry entry */
   dropTenantDb(tenantId: string, options?: DropTenantOptions): Promise<void>;
+  /** writes the structure every tenant migration produces to `tenant.schemaFile` */
+  dumpTenantSchema(options?: SchemaDumpOptions): Promise<SchemaDumpResult>;
   /** closes the cached connection pool; the database itself is untouched */
   destroyTenant(tenantId: string): Promise<void>;
   destroyAll(): Promise<void>;
@@ -95,6 +103,28 @@ export interface TenantManager {
 export type DropTenantOptions = {
   /** also drop a tenant that is missing from the registry, such as a half-created one */
   allowUnregistered?: boolean;
+};
+
+export type SchemaDumpOptions = {
+  /** delete the migration files the dump now contains */
+  prune?: boolean;
+};
+
+export type SchemaDumpResult = {
+  /** path of the dump file */
+  file: string;
+  /** names of the migrations the dump contains, oldest first */
+  migrations: string[];
+  /** paths of the migration files deleted by `prune` */
+  pruned: string[];
+};
+
+export type SchemaDumpStatus = {
+  /** path of the dump file */
+  file: string;
+  exists: boolean;
+  /** migration files on disk that the dump does not contain */
+  missing: string[];
 };
 
 export type TenantResolverOptions<Req extends { [k: string]: any } = any> = {
