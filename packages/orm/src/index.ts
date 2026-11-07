@@ -47,6 +47,24 @@ export {
   type SeedRunResult,
   type SourceFile,
 } from "./migrations";
+export {
+  BOOKKEEPING_TABLES,
+  compareSchemas,
+  describeSchema,
+  describeTable,
+  hasColumn,
+  hasTable,
+  listTables,
+  type CheckInfo,
+  type ColumnInfo,
+  type CompareOptions,
+  type ForeignKeyInfo,
+  type IndexInfo,
+  type ListTablesOptions,
+  type ReferentialAction,
+  type SchemaInfo,
+  type TableInfo,
+} from "./introspect";
 export { JoinClause, QueryBuilder } from "./query/builder";
 export type { Operator } from "./query/state";
 export { RawSql, sql, SqlIdentifier, SqlText } from "./sql";
