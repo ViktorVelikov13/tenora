@@ -160,8 +160,8 @@ describe("compiling queries", () => {
       postgres: 'select * from "jobs" limit $1 for update skip locked',
       mysql: "select * from `jobs` limit ? for update skip locked",
       sqlite: 'select * from "jobs" limit ?',
+      mssql: 'select top(1) * from "jobs" with (updlock, rowlock, readpast)',
     });
-    assert.throws(() => db.mssql.table("jobs").forUpdate().toSql(), /not supported on SQL Server/);
   });
 
   it("binds raw fragments and quotes their identifiers", () => {
@@ -179,17 +179,106 @@ describe("compiling queries", () => {
   it("refuses update and delete with limit or order, which they would silently ignore", async () => {
     await assert.rejects(db.postgres.table("users").limit(1).delete(), /ignores limit/);
   });
+
+  it("binds join values as parameters and compares join columns as columns", () => {
+    const query = db.postgres
+      .table("orders as o")
+      .join("customers as c", "c.id", "o.customer_id")
+      .leftJoin("notes", (j) => j.on("notes.order_id", "o.id").where("notes.kind", "public"))
+      .where("o.total", ">", 10);
+    assert.deepEqual(query.toSql(), {
+      sql: 'select * from "orders" as "o" inner join "customers" as "c" on "c"."id" = "o"."customer_id" left join "notes" on ("notes"."order_id" = "o"."id" and "notes"."kind" = $1) where "o"."total" > $2',
+      parameters: ["public", 10],
+    });
+  });
+
+  it("locks with each dialect's syntax", () => {
+    expectSql((d) => d.table("jobs as j").forUpdate().skipLocked(), {
+      postgres: 'select * from "jobs" as "j" for update skip locked',
+      mysql: "select * from `jobs` as `j` for update skip locked",
+      sqlite: 'select * from "jobs" as "j"',
+      mssql: 'select * from "jobs" as "j" with (updlock, rowlock, readpast)',
+    });
+    expectSql((d) => d.table("jobs").sharedLock(), {
+      postgres: 'select * from "jobs" for share',
+      mysql: "select * from `jobs` for share",
+      mariadb: "select * from `jobs` lock in share mode",
+      mssql: 'select * from "jobs" with (holdlock, rowlock)',
+    });
+  });
+
+  it("orders and limits a union as a whole", () => {
+    expectSql((d) => d.table("a").select("id").union(d.table("b").select("id")).orderBy("id").limit(5), {
+      postgres: 'select "id" from "a" union select "id" from "b" order by "id" asc limit $1',
+      mssql: 'select "id" from "a" union select "id" from "b" order by "id" asc offset @1 rows fetch next @2 rows only',
+    });
+    assert.throws(
+      () => db.postgres.table("a").union(db.postgres.table("b").orderBy("id")).toSql(),
+      /cannot have orderBy, limit or offset/
+    );
+  });
+
+  it("counts a grouped query's rows, not its first group", async () => {
+    const statements = await capture(db.postgres, (c) => c.table("orders").select("customer_id").groupBy("customer_id").count());
+    assert.deepEqual(statements, [
+      'select count(*) as "aggregate" from (select "customer_id" from "orders" group by "customer_id") as "tenora_count"',
+    ]);
+    await assert.rejects(db.postgres.table("orders").groupBy("customer_id").sum("total"), /selectRaw\(\) and groupBy\(\)/);
+  });
+
+  it("upserts with each dialect's syntax", async () => {
+    const expected = {
+      postgres: 'insert into "accounts" ("email", "name") values ($1, $2) on conflict ("email") do update set "name" = "excluded"."name"',
+      sqlite: 'insert into "accounts" ("email", "name") values (?, ?) on conflict ("email") do update set "name" = "excluded"."name"',
+      mysql: "insert into `accounts` (`email`, `name`) values (?, ?) as `tenora_new` on duplicate key update `name` = `tenora_new`.`name`",
+      mariadb: "insert into `accounts` (`email`, `name`) values (?, ?) on duplicate key update `name` = values(`name`)",
+      mssql: 'merge into "accounts" with (holdlock) as "tenora_target" using (values (@1, @2)) as "tenora_source" ("email", "name") on "tenora_target"."email" = "tenora_source"."email" when matched then update set "name" = "tenora_source"."name" when not matched then insert ("email", "name") values ("tenora_source"."email", "tenora_source"."name");',
+    };
+    for (const [dialect, text] of Object.entries(expected)) {
+      const statements = await capture(db[dialect], (c) => c.table("accounts").upsert({ email: "a@b.c", name: "Ada" }, "email"));
+      assert.deepEqual(statements, [text], dialect);
+    }
+  });
+
+  it("refuses a subquery from another connection, which would be another database", () => {
+    const other = createConnection({ client: "pg", connection: {} });
+    assert.throws(() => db.postgres.table("users").whereIn("id", other.table("orders").select("user_id")), /same connection/);
+  });
+
+  it("refuses writes on joined, grouped or subquery sources", async () => {
+    await assert.rejects(db.postgres.table("a").join("b", "a.id", "b.a_id").update({ x: 1 }), /works on one table/);
+    await assert.rejects(db.postgres.fromSub(db.postgres.table("a"), "t").delete(), /needs a table/);
+  });
+
+  it("applies when() only for truthy values, and passes the value on", () => {
+    const search = (term) => db.postgres.table("users").when(term, (q, t) => q.where("name", "like", `${t}%`)).toSql();
+    assert.equal(search("ad").sql, 'select * from "users" where "name" like $1');
+    assert.deepEqual(search("ad").parameters, ["ad%"]);
+    assert.equal(search("").sql, 'select * from "users"');
+  });
 });
 
 const DDL = {
-  postgres:
+  postgres: [
     "create table accounts (id serial primary key, name varchar(100) not null unique, balance integer not null default 0)",
-  mysql:
+    "create table customers (id serial primary key, name varchar(100) not null, email varchar(100) not null unique)",
+    "create table orders (id serial primary key, customer_id integer not null, total integer not null, status varchar(20) not null)",
+  ],
+  mysql: [
     "create table accounts (id int auto_increment primary key, name varchar(100) not null unique, balance int not null default 0) engine=InnoDB",
-  sqlite:
+    "create table customers (id int auto_increment primary key, name varchar(100) not null, email varchar(100) not null unique) engine=InnoDB",
+    "create table orders (id int auto_increment primary key, customer_id int not null, total int not null, status varchar(20) not null) engine=InnoDB",
+  ],
+  sqlite: [
     "create table accounts (id integer primary key autoincrement, name varchar(100) not null unique, balance integer not null default 0)",
-  mssql:
+    "create table customers (id integer primary key autoincrement, name varchar(100) not null, email varchar(100) not null unique)",
+    "create table orders (id integer primary key autoincrement, customer_id integer not null, total integer not null, status varchar(20) not null)",
+  ],
+  mssql: [
     "create table accounts (id int identity(1,1) primary key, name nvarchar(100) not null unique, balance int not null default 0)",
+    "create table customers (id int identity(1,1) primary key, name nvarchar(100) not null, email nvarchar(100) not null unique)",
+    "create table orders (id int identity(1,1) primary key, customer_id int not null, total int not null, status nvarchar(20) not null)",
+  ],
 };
 DDL.mariadb = DDL.mysql;
 
@@ -238,11 +327,11 @@ describe("ORM against a real database", () => {
           observer = knex(engine.knexConfig(database));
           db = createConnection({ ...serverConfig(engine, database), pool: { max: 5, acquireTimeoutMillis: 5_000 } });
         }
-        await db.raw(sql`${sql.raw(DDL[dialect])}`);
+        for (const statement of DDL[dialect]) await db.raw(sql`${sql.raw(statement)}`);
       });
 
       afterEach(async () => {
-        await db.table("accounts").delete();
+        for (const table of ["accounts", "orders", "customers"]) await db.table(table).delete();
       });
 
       after(async () => {
@@ -289,6 +378,165 @@ describe("ORM against a real database", () => {
           assert.ok(error instanceof QueryError);
           assert.equal(error.kind, "unique_violation");
         });
+      });
+
+      describe("joins, subqueries, grouping and upserts", () => {
+        // ada: 10 queued, 30 shipped; bob: 20 queued, 60 queued; cy: no orders.
+        const seed = async () => {
+          await db.table("customers").insert([
+            { name: "ada", email: "ada@x" },
+            { name: "bob", email: "bob@x" },
+            { name: "cy", email: "cy@x" },
+          ]);
+          const id = Object.fromEntries((await db.table("customers").get()).map((row) => [row.name, row.id]));
+          await db.table("orders").insert([
+            { customer_id: id.ada, total: 10, status: "queued" },
+            { customer_id: id.ada, total: 30, status: "shipped" },
+            { customer_id: id.bob, total: 20, status: "queued" },
+            { customer_id: id.bob, total: 60, status: "queued" },
+          ]);
+        };
+        const pairs = (rows, ...keys) => rows.map((row) => keys.map((key) => (key === "name" ? row[key] : row[key] === null ? null : Number(row[key]))));
+
+        it("joins tables, with extra conditions in a callback", async () => {
+          await seed();
+          const joined = await db
+            .table("orders as o")
+            .join("customers as c", "c.id", "o.customer_id")
+            .select("c.name", "o.total")
+            .orderBy("o.total")
+            .get();
+          assert.deepEqual(pairs(joined, "name", "total"), [["ada", 10], ["bob", 20], ["ada", 30], ["bob", 60]]);
+
+          const queued = await db
+            .table("customers as c")
+            .leftJoin("orders as o", (j) => j.on("o.customer_id", "c.id").where("o.status", "queued"))
+            .select("c.name", "o.total")
+            .orderBy("c.name")
+            .orderBy("o.total")
+            .get();
+          assert.deepEqual(pairs(queued, "name", "total"), [["ada", 10], ["bob", 20], ["bob", 60], ["cy", null]]);
+        });
+
+        it("filters with subqueries", async () => {
+          await seed();
+          const bigSpenders = db.table("orders").select("customer_id").where("total", ">", 25);
+          assert.deepEqual(await db.table("customers").whereIn("id", bigSpenders).orderBy("name").pluck("name"), ["ada", "bob"]);
+
+          const withoutOrders = db.table("customers").whereNotExists(
+            db.table("orders").whereColumn("orders.customer_id", "customers.id")
+          );
+          assert.deepEqual(await withoutOrders.pluck("name"), ["cy"]);
+        });
+
+        it("selects, joins and queries subqueries", async () => {
+          await seed();
+          const counted = await db
+            .table("customers")
+            .select("name")
+            .selectSub(db.table("orders").selectRaw(sql`count(*)`).whereColumn("orders.customer_id", "customers.id"), "orders_count")
+            .orderBy("name")
+            .get();
+          assert.deepEqual(pairs(counted, "name", "orders_count"), [["ada", 2], ["bob", 2], ["cy", 0]]);
+
+          const spent = db.table("orders").select("customer_id").selectRaw(sql`sum(${sql.ref("total")}) as spent`).groupBy("customer_id");
+          const joined = await db.table("customers as c").joinSub(spent, "t", "t.customer_id", "c.id").select("c.name", "t.spent").orderBy("c.name").get();
+          assert.deepEqual(pairs(joined, "name", "spent"), [["ada", 40], ["bob", 80]]);
+          assert.equal(await db.fromSub(spent, "t").where("t.spent", ">", 50).count(), 1);
+        });
+
+        it("groups, and counts a grouped query's rows", async () => {
+          await seed();
+          const perCustomer = db.table("orders").select("customer_id").groupBy("customer_id");
+          assert.equal(await perCustomer.count(), 2);
+          const big = await db
+            .table("orders")
+            .select("customer_id")
+            .selectRaw(sql`count(*) as orders`)
+            .groupBy("customer_id")
+            .havingRaw(sql`sum(${sql.ref("total")}) > ${50}`)
+            .get();
+          assert.equal(big.length, 1);
+          assert.equal(Number(big[0].orders), 2);
+        });
+
+        it("aggregates as numbers, and min and max as stored", async () => {
+          await seed();
+          assert.equal(await db.table("orders").sum("total"), 120);
+          assert.equal(await db.table("orders").avg("total"), 30);
+          assert.equal(Number(await db.table("orders").min("total")), 10);
+          assert.equal(Number(await db.table("orders").max("total")), 60);
+          assert.equal(await db.table("orders").where("total", ">", 1000).sum("total"), null);
+          assert.equal(await db.table("orders").where("status", "queued").count(), 3);
+        });
+
+        it("combines queries with union, ordered and limited as a whole", async () => {
+          await seed();
+          const queued = db.table("orders").select("total").where("status", "queued");
+          const shipped = db.table("orders").select("total").where("status", "shipped");
+          assert.deepEqual((await queued.unionAll(shipped).orderByDesc("total").limit(2).pluck("total")).map(Number), [60, 30]);
+          assert.equal(await queued.union(shipped).count(), 4);
+        });
+
+        it("reads conveniently: when, between, pages, random order, find and value", async () => {
+          await seed();
+          const search = (term) => db.table("customers").when(term, (q, t) => q.where("name", "like", `${t}%`)).orderBy("name").pluck("name");
+          assert.deepEqual(await search("b"), ["bob"]);
+          assert.deepEqual(await search(undefined), ["ada", "bob", "cy"]);
+          assert.deepEqual((await db.table("orders").whereBetween("total", [15, 35]).orderBy("total").pluck("total")).map(Number), [20, 30]);
+          assert.deepEqual(await db.table("customers").orderBy("name").forPage(2, 2).pluck("name"), ["cy"]);
+          assert.equal((await db.table("customers").inRandomOrder().pluck("name")).length, 3);
+          const adaId = await db.table("customers").where("name", "ada").value("id");
+          assert.equal((await db.table("customers").find(adaId)).email, "ada@x");
+          assert.equal(await db.table("customers as c").where("c.email", "ada@x").value("c.name"), "ada");
+        });
+
+        it("upserts: inserts new rows, updates existing ones, or leaves them alone", async () => {
+          await seed();
+          await db.table("customers").upsert(
+            [
+              { email: "ada@x", name: "Ada L" },
+              { email: "dee@x", name: "dee" },
+            ],
+            "email"
+          );
+          assert.deepEqual(await db.table("customers").orderBy("email").pluck("name"), ["Ada L", "bob", "cy", "dee"]);
+
+          await db.table("customers").upsert({ email: "dee@x", name: "ignored" }, "email", []);
+          assert.equal(await db.table("customers").where("email", "dee@x").value("name"), "dee");
+        });
+
+        it("locks rows in a transaction, with each dialect's syntax", async () => {
+          await seed();
+          const rows = await db.transaction(async () => [
+            await db.table("orders as o").where("o.total", 10).forUpdate().get(),
+            await db.table("orders").where("total", 20).sharedLock().get(),
+          ]);
+          assert.deepEqual(rows.map((found) => found.length), [1, 1]);
+        });
+
+        it(
+          "skips rows another transaction locked",
+          { skip: isSqlite && "SQLite has one connection, so there is no other transaction" },
+          async () => {
+            await seed();
+            const lockedId = await db.table("orders").where("total", 10).value("id");
+            const locked = deferred();
+            const release = deferred();
+            const holder = db.transaction(async () => {
+              await db.table("orders").where("id", lockedId).forUpdate().get();
+              locked.resolve();
+              await release.promise;
+            });
+            await locked.promise;
+            const free = await db.transaction(() =>
+              db.table("orders").where("status", "queued").forUpdate().skipLocked().orderBy("total").pluck("total")
+            );
+            release.resolve();
+            await holder;
+            assert.deepEqual(free.map(Number), [20, 60]);
+          }
+        );
       });
 
       describe("transactions", () => {

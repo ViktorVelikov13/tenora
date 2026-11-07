@@ -114,6 +114,14 @@ export class Connection {
     return QueryBuilder.forTable<Row>(this, name);
   }
 
+  /** A query that selects from a subquery under an alias: `db.fromSub(db.table("orders").select(...), "o")`. */
+  fromSub<Row extends Record<string, unknown> = Record<string, unknown>>(
+    query: QueryBuilder<any>,
+    alias: string
+  ): QueryBuilder<Row> {
+    return QueryBuilder.fromSub<Row>(this, query, alias);
+  }
+
   /** Runs a raw `sql` fragment and returns its rows. */
   raw<Row extends Record<string, unknown> = Record<string, unknown>>(fragment: RawSql): Promise<Row[]> {
     try {
