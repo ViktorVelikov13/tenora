@@ -1,6 +1,6 @@
 {
   "name": "@tenora/orm",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Eloquent-inspired ORM for Tenora with ambient, per-connection transactions",
   "type": "module",
   "main": "dist/index.js",
