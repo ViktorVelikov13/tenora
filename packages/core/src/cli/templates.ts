@@ -63,11 +63,13 @@ const splitColumns = (tokens: string[]): string[] => {
 };
 
 const inferCreateTable = (tokens: string[]): string | undefined => {
-  const tableIdx = tokens.indexOf("table");
-  if (tableIdx > 0) return tokens[tableIdx - 1];
   const createIdx = tokens.indexOf("create");
-  if (createIdx >= 0 && tokens[createIdx + 1]) return tokens[createIdx + 1];
-  return undefined;
+  if (createIdx === -1) return undefined;
+  const tableTokens = tokens.slice(createIdx + 1);
+  const table = tableTokens[tableTokens.length - 1] === "table"
+    ? joinTokens(tableTokens.slice(0, -1))
+    : joinTokens(tableTokens);
+  return table || undefined;
 };
 
 const inferAlterAdd = (tokens: string[]) => {
@@ -131,12 +133,12 @@ export const writeMigrationTemplate = (filePath: string, moduleType: "esm" | "cj
   const createTable = inferCreateTable(tokens);
   const addPlan = inferAlterAdd(tokens);
   const removePlan = inferAlterRemove(tokens);
-  const body = createTable
-    ? buildCreateTableTemplate(createTable, moduleType)
-    : addPlan
-      ? buildAlterAddTemplate(addPlan.table, addPlan.columns, moduleType)
-      : removePlan
-        ? buildAlterRemoveTemplate(removePlan.table, removePlan.columns, moduleType)
+  const body = addPlan
+    ? buildAlterAddTemplate(addPlan.table, addPlan.columns, moduleType)
+    : removePlan
+      ? buildAlterRemoveTemplate(removePlan.table, removePlan.columns, moduleType)
+      : createTable
+        ? buildCreateTableTemplate(createTable, moduleType)
         : buildDefaultMigrationTemplate(moduleType);
   fs.writeFileSync(filePath, body);
 };

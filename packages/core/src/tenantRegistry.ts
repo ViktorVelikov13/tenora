@@ -2,6 +2,8 @@ import fs from "fs";
 import path from "path";
 import type { Knex } from "knex";
 import type { MultiTenantOptions, TenantRecord, TenantRegistryOptions } from "./types";
+import { resolveTemplateModuleType } from "./cli/templates";
+import { isMssqlClient, resolveClient } from "./factory/shared";
 import { decryptPassword as defaultDecrypt, encryptPassword as defaultEncrypt } from "./password";
 
 const REGISTRY_MARKER = "tenora:registry";
@@ -84,9 +86,12 @@ export const ensureRegistryMigration = (
     .slice(0, 14);
   const fileName = `${timestamp}_create_tenant_registry.js`;
   const filePath = path.join(migrationsDir, fileName);
+  const moduleType = resolveTemplateModuleType({});
+  const exportUp = moduleType === "esm" ? "export const up" : "exports.up";
+  const exportDown = moduleType === "esm" ? "export const down" : "exports.down";
 
   const migration = `// ${REGISTRY_MARKER}
-export const up = (knex) =>
+${exportUp} = (knex) =>
   knex.schema.createTable("${registry.table}", (t) => {
     t.string("${registry.idColumn}").primary();
     t.string("${registry.passwordColumn}");
@@ -95,7 +100,7 @@ export const up = (knex) =>
     t.timestamp("${registry.updatedAtColumn}", { useTz: true }).defaultTo(knex.fn.now());
   });
 
-export const down = (knex) => knex.schema.dropTableIfExists("${registry.table}");
+${exportDown} = (knex) => knex.schema.dropTableIfExists("${registry.table}");
 `;
 
   fs.writeFileSync(filePath, migration);
@@ -151,8 +156,29 @@ export const upsertTenantInRegistry = async (
     record[registry.passwordColumn] = password;
   }
 
+  // Knex does not support onConflict() on SQL Server.
+  if (isMssqlClient(resolveClient(options.base.client))) {
+    const updated = await base(registry.table)
+      .where(registry.idColumn, tenantId)
+      .update(record);
+    if (!updated) {
+      await base(registry.table).insert(record);
+    }
+    return;
+  }
+
   await base(registry.table)
     .insert(record)
     .onConflict(registry.idColumn)
     .merge(record);
+};
+
+export const removeTenantFromRegistry = async (
+  base: Knex,
+  options: MultiTenantOptions,
+  tenantId: string
+) => {
+  const registry = resolveRegistry(options);
+  await ensureRegistryTable(base, options);
+  await base(registry.table).where(registry.idColumn, tenantId).del();
 };

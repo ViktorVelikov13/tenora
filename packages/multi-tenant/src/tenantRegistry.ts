@@ -5,4 +5,5 @@ export {
   ensureRegistryTable,
   listTenantsFromRegistry,
   upsertTenantInRegistry,
+  removeTenantFromRegistry,
 } from "@tenora/core";

@@ -1,6 +1,8 @@
 import type { TenoraClient } from "../types";
 
-export const resolveClient = (value?: TenoraClient): TenoraClient => value ?? "pg";
+// "sqlserver" is a Tenora alias; Knex only knows this dialect as "mssql".
+export const resolveClient = (value?: TenoraClient): TenoraClient =>
+  value === "sqlserver" ? "mssql" : value ?? "pg";
 
 export const isPostgresClient = (client: TenoraClient): boolean =>
   client === "pg" || client === "postgres" || client === "postgresql";

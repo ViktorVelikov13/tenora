@@ -8,6 +8,7 @@ export type {
   TenantAuthorizer,
   TenantIdResolver,
   TenantManager,
+  DropTenantOptions,
   TenantResolverOptions,
   TenantResolver,
   TenantRecord,
