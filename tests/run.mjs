@@ -23,7 +23,13 @@ const compose = (...composeArgs) =>
   spawnSync("docker", ["compose", "-f", COMPOSE_FILE, ...composeArgs], { stdio: "inherit" }).status;
 
 if (useDocker) {
-  if (compose("up", "-d", "--wait") !== 0) process.exit(1);
+  // SQL Server's container sometimes crashes while it sets itself up (seen on GitHub's Ubuntu 26.04 runners, errno 11
+  // inside its security subsystem). Its files may be half-written by then, so every container starts over once.
+  if (compose("up", "-d", "--wait") !== 0) {
+    console.warn("\nA database container failed to start. Removing the containers and starting them once more.\n");
+    compose("down", "-v");
+    if (compose("up", "-d", "--wait") !== 0) process.exit(1);
+  }
   Object.assign(process.env, DOCKER_URLS);
   // Dump tools must be at least as new as the server, so run the ones inside each container.
   const inContainer = (tool) => path.join(repoRoot, "tests/support/docker-dump", `${tool}.mjs`);
