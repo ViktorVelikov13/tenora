@@ -588,22 +588,26 @@ runner.
 
 ## Keeping 0.x maintained
 
-1. Release what is on `development` as **0.4.0** first (the crypto change and schema dumps). Merge PR #12 (trusted
-   publishing) before that release.
-2. Cut **`release/0.x`** from `main` at the 0.4.0 tag. On that branch, set Changesets' `baseBranch` to `release/0.x`,
-   and add the branch to the release workflow, publishing with `changeset publish --tag v0`. Without the tag, a 0.x
-   patch published after 1.0 would become `latest`.
-3. `development` becomes the 1.0 line. Only then do its `engines` move to `"node": ">=24.15.0"` and CI add Node 26
-   next to 24; changing them earlier would drop Node 22 from 0.4.0, which is still released from `development`. 1.0
-   prereleases use Changesets pre mode (`changeset pre enter next`) and publish `1.0.0-next.N` under the `next` dist-tag.
-4. A 0.5.0 minor adds what helps people prepare: `schema:dump:base`, the registry check that survives pruning, and
-   `tenora upgrade --check`.
-5. Support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development`
-   no longer has the Knex code, most 0.x fixes touch code that exists only on `release/0.x`, so fixes are made there,
-   in PRs against `release/0.x`, and carried forward to `development` by hand when the same problem exists in 1.0. The
-   README gets a "Which version" table; at end of life, `npm deprecate` marks the 0.x range with a pointer to the
-   upgrade guide.
-6. CI runs the full database suite on both branches.
+The 1.0 work lives on its own long-lived branch, **`next`**, so `development` and `main` keep shipping 0.x releases
+undisturbed while it is built.
+
+1. `development` stays the 0.x line for now: its next releases (0.4.0, with the crypto change and schema dumps, and
+   whatever else goes live) are made from it as today. Merge PR #12 (trusted publishing) before the next release.
+2. `next` holds the 1.0 work, branched from the plan. It already requires Node `>=24.15.0` and tests on Node 24 and 26;
+   `development` keeps Node 22.12. `development` is merged into `next` regularly, so 0.x changes reach 1.0 as they land.
+3. When 1.0 is ready for prereleases, cut **`release/0.x`** from `main` at the last 0.x release. On that branch, set
+   Changesets' `baseBranch` to `release/0.x` and add the branch to the release workflow, publishing with
+   `changeset publish --tag v0`. Without the tag, a 0.x patch published after 1.0 would become `latest`.
+4. Then merge `next` into `development`, which becomes the 1.0 line. 1.0 prereleases use Changesets pre mode
+   (`changeset pre enter next`) and publish `1.0.0-next.N` under the `next` dist-tag.
+5. A 0.x minor adds what helps people prepare, made on `development` while it is still the 0.x line:
+   `schema:dump:base`, the registry check that survives pruning, and `tenora upgrade --check`.
+6. Support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development` no longer
+   has the Knex code, most 0.x fixes touch code that exists only on `release/0.x`, so fixes are made there, in PRs
+   against `release/0.x`, and carried forward to `development` by hand when the same problem exists in 1.0. The README
+   gets a "Which version" table; at end of life, `npm deprecate` marks the 0.x range with a pointer to the upgrade
+   guide.
+7. CI runs the full database suite on every branch that is pushed, `next` and `release/0.x` included.
 
 ## Phases
 
@@ -612,7 +616,7 @@ Each phase ends with something releasable as a prerelease and tested on all five
 
 | Phase | Deliverable | Done when |
 | --- | --- | --- |
-| 0. Prepare 0.x | 0.4.0 released, `release/0.x` cut, 0.5.0 with `schema:dump:base`, the registry check that survives pruning, and `upgrade --check` | users can baseline on 0.x |
+| 0. Prepare 0.x | on `development`: 0.4.0 released, then a 0.x minor with `schema:dump:base`, the registry check that survives pruning, and `upgrade --check`; `release/0.x` cut when 1.0 prereleases start | users can baseline on 0.x |
 | 1. Engine | `@tenora/orm`: driver adapters, pools, connections and transactions (savepoints, queueing, verified commits, after-commit, retries), the `compile()` module with snapshot tests, query builder and dialect rules, `sql` fragments | `db.table()` CRUD, joins, aggregates, upserts and every transaction rule pass on all five databases |
 | 2. Schema and migrator; core on the engine | blueprint schema builder with the SQLite rebuild, migrator on `tenora_migrations`, seeder, schema dumps; provisioning, registry and every CLI command ported; Knex removed from `core` and `cli` | the existing CLI and lifecycle tests pass with Knex not installed |
 | 3. Models | attributes, casts, fillable, timestamps, dirty tracking, CRUD, events and observers, scopes, soft deletes, serialization, strict mode; hasOne, hasMany, belongsTo, belongsToMany, hasManyThrough; eager loading, `withCount`, `whereHas`; pagination and chunking; type design measured and frozen | model test suite passes on all five databases |
@@ -663,7 +667,7 @@ Settled on 2026-11-07:
    2.0, only for files the converter cannot handle and for the side-by-side bridge
    ([Existing Knex migration and seed files](#existing-knex-migration-and-seed-files)).
 5. **SQL Server ships in 1.0.**
-6. **Node 24.15 or newer** for 1.0. `engines` changes on `development` once `release/0.x` is cut
-   ([Keeping 0.x maintained](#keeping-0x-maintained)).
+6. **Node 24.15 or newer** for 1.0, required on `next` from the start; `development` keeps Node 22.12 while it ships
+   0.x ([Keeping 0.x maintained](#keeping-0x-maintained)).
 7. **0.x support**: bug fixes for 6 months and security fixes for 12 months after 1.0.0.
 8. **All packages release as 1.0.0.**

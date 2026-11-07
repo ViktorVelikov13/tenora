@@ -113,7 +113,7 @@ npm run release
 In CI, publish is triggered on `main` via GitHub Actions.
 
 ## Compatibility notes
-- All packages require Node.js 22.12 or newer.
+- All packages require Node.js 24.15 or newer.
 - `@tenora/multi-tenant` still exposes a `tenora` binary in the current release line for backwards compatibility.
 - New projects should install CLI from `@tenora/cli`.
 - When using globally installed `@tenora/cli`, install your database driver in each target project (for example `pg` for Postgres).
