@@ -1,9 +1,19 @@
 import { sql } from "../sql";
-import { groupBy, referentialAction, sortForeignKeys, sortIndexes, splitType, truthy, typeSizes } from "./normalize";
-import type { ColumnInfo, ForeignKeyInfo, IndexInfo, Introspector } from "./types";
+import {
+  groupBy,
+  referentialAction,
+  sortChecks,
+  sortForeignKeys,
+  sortIndexes,
+  splitType,
+  truthy,
+  typeSizes,
+} from "./normalize";
+import type { CheckInfo, ColumnInfo, ForeignKeyInfo, IndexInfo, Introspector } from "./types";
 
-// The pragmas leave out two things the schema says: foreign key names and the AUTOINCREMENT keyword. Both are read
-// from the CREATE TABLE statement SQLite keeps in sqlite_master, with a tokenizer that knows SQLite's quoting.
+// The pragmas leave out some of what the schema says: foreign key names, check constraints and the AUTOINCREMENT
+// keyword. They are read from the CREATE TABLE statement SQLite keeps in sqlite_master, with a tokenizer that knows
+// SQLite's quoting.
 
 type Token = { kind: "word" | "quoted" | "string" | "punct"; value: string; start: number; end: number };
 
@@ -96,15 +106,27 @@ const nameList = (tokens: Token[], open: number) =>
 
 type DeclaredForeignKey = { name: string | null; columns: string[]; table: string };
 
-/** Named foreign keys, AUTOINCREMENT columns and WITHOUT ROWID, as declared in a CREATE TABLE statement. */
+/**
+ * Foreign keys and checks with their names, AUTOINCREMENT columns and WITHOUT ROWID, as declared in a CREATE TABLE
+ * statement.
+ */
 const parseCreateTable = (text: string) => {
   const tokens = tokenize(text);
   const foreignKeys: DeclaredForeignKey[] = [];
+  const checks: CheckInfo[] = [];
   const autoIncrement = new Set<string>();
   const open = firstParen(tokens);
-  if (open < 0) return { foreignKeys, autoIncrement, withoutRowid: false };
+  if (open < 0) return { foreignKeys, checks, autoIncrement, withoutRowid: false };
   const options = tokens.slice(closingParen(tokens, open) + 1);
   const withoutRowid = options.some((token, i) => isWord(token, "without") && isWord(options[i + 1], "rowid"));
+
+  // CHECK at clause[i], its parentheses at i + 1 and i + 2 (what is between them is not in the clause).
+  const addCheck = (clause: Token[], i: number, name: string | null) => {
+    const [open, close] = [clause[i + 1], clause[i + 2]];
+    if (open?.value === "(" && close?.value === ")") {
+      checks.push({ name, expression: text.slice(open.end, close.start).trim() });
+    }
+  };
 
   for (const item of listItems(tokens, open)) {
     // Only what is outside parentheses is a clause; skipping the rest keeps CHECK and DEFAULT bodies out.
@@ -133,30 +155,37 @@ const parseCreateTable = (text: string) => {
       });
       continue;
     }
-    if (["primary", "unique", "check"].some((word) => isWord(clause[start], word))) continue;
+    if (isWord(clause[start], "check")) {
+      addCheck(clause, start, name);
+      continue;
+    }
+    if (["primary", "unique"].some((word) => isWord(clause[start], word))) continue;
 
     // A column: its name, then its type and constraints, where CONSTRAINT names only the constraint after it.
     const column = identifier(clause[0]) ?? "";
     for (let i = 1; i < clause.length; i++) {
+      const named = isWord(clause[i - 2], "constraint") ? (identifier(clause[i - 1]) ?? null) : null;
       if (isWord(clause[i], "autoincrement")) autoIncrement.add(column.toLowerCase());
+      if (isWord(clause[i], "check")) addCheck(clause, i, named);
       if (isWord(clause[i], "references")) {
-        const named = isWord(clause[i - 2], "constraint") ? (identifier(clause[i - 1]) ?? null) : null;
         foreignKeys.push({ name: named, columns: [column], table: identifier(clause[i + 1]) ?? "" });
       }
     }
   }
-  return { foreignKeys, autoIncrement, withoutRowid };
+  return { foreignKeys, checks, autoIncrement, withoutRowid };
 };
 
-/** The text of each key in a CREATE INDEX statement, for keys that are expressions. */
-const indexKeyTexts = (text: string) => {
+/** The text of each key in a CREATE INDEX statement, and of its WHERE clause when it is partial. */
+const parseCreateIndex = (text: string): { keys: string[]; where?: string } => {
   const tokens = tokenize(text);
   const on = tokens.findIndex((token) => isWord(token, "on"));
   const open = firstParen(tokens, on);
-  if (on < 0 || open < 0) return [];
-  return listItems(tokens, open).map((item) =>
+  if (on < 0 || open < 0) return { keys: [] };
+  const keys = listItems(tokens, open).map((item) =>
     item.length ? text.slice(item[0].start, item[item.length - 1].end) : ""
   );
+  const rest = tokens.slice(closingParen(tokens, open) + 1);
+  return isWord(rest[0], "where") && rest[1] ? { keys, where: text.slice(rest[1].start).trim() } : { keys };
 };
 
 /** SQLite type names are case-insensitive and kept as typed; "DECIMAL(8, 2)" becomes "decimal(8,2)". */
@@ -234,26 +263,27 @@ export const sqlite: Introspector = {
     });
 
     // The primary key's own index (origin "pk") is the primary key, not an index.
-    const indexList = await db.raw<{ name: string; unique: number; origin: string }>(
-      sql`select name, "unique", origin from pragma_index_list(${name}, 'main') where origin <> 'pk'`
+    const indexList = await db.raw<{ name: string; unique: number; origin: string; partial: number }>(
+      sql`select name, "unique", origin, partial from pragma_index_list(${name}, 'main') where origin <> 'pk'`
     );
     const indexes: IndexInfo[] = [];
     for (const index of indexList) {
-      // cid -2 marks an expression, whose text only the CREATE INDEX statement has.
+      // cid -2 marks an expression. Its text, like a partial index's condition, is only in the CREATE INDEX statement.
       const keys = await db.raw<{ cid: number; name: string | null }>(
         sql`select cid, name from pragma_index_xinfo(${index.name}, 'main') where "key" = 1 order by seqno`
       );
-      let texts: string[] = [];
-      if (keys.some((key) => key.name === null)) {
-        const statement = await db.raw<{ sql: string | null }>(
+      let statement: { keys: string[]; where?: string } = { keys: [] };
+      if (truthy(index.partial) || keys.some((key) => key.name === null)) {
+        const rows = await db.raw<{ sql: string | null }>(
           sql`select sql from main.sqlite_master where type = 'index' and name = ${index.name}`
         );
-        texts = indexKeyTexts(statement[0]?.sql ?? "");
+        statement = parseCreateIndex(rows[0]?.sql ?? "");
       }
       indexes.push({
         name: index.name,
-        columns: keys.map((key, i) => key.name ?? texts[i] ?? ""),
+        columns: keys.map((key, i) => key.name ?? statement.keys[i] ?? ""),
         unique: truthy(index.unique),
+        ...(truthy(index.partial) && statement.where !== undefined ? { where: statement.where } : {}),
       });
     }
 
@@ -297,7 +327,14 @@ export const sqlite: Introspector = {
       });
     }
 
-    return { name, columns, primaryKey, indexes: sortIndexes(indexes), foreignKeys: sortForeignKeys(foreignKeys) };
+    return {
+      name,
+      columns,
+      primaryKey,
+      indexes: sortIndexes(indexes),
+      foreignKeys: sortForeignKeys(foreignKeys),
+      checks: sortChecks(declared.checks),
+    };
   },
 };
 

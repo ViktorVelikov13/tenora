@@ -1,5 +1,5 @@
 import { compareText } from "./normalize";
-import type { ColumnInfo, CompareOptions, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo } from "./types";
+import type { CheckInfo, ColumnInfo, CompareOptions, ForeignKeyInfo, IndexInfo, SchemaInfo, TableInfo } from "./types";
 
 const quote = (name: string) => `"${name}"`;
 const list = (names: string[]) => `(${names.join(", ")})`;
@@ -35,8 +35,8 @@ const naming = (item: Constraint) =>
       : `named ${quote(item.name)}`;
 
 /**
- * Matches the indexes or foreign keys of one table: by name first when names matter, then by what they cover with
- * the same attributes, then by what they cover alone. Returns the pairs and what is left on each side.
+ * Matches the indexes, foreign keys or checks of one table: by name first when names matter, then by what they cover
+ * with the same attributes, then by what they cover alone. Returns the pairs and what is left on each side.
  */
 const match = <T extends Constraint>(
   a: T[],
@@ -77,8 +77,11 @@ const compareColumns = (table: string, a: ColumnInfo, b: ColumnInfo, la: string,
   }
 };
 
+const condition = (index: IndexInfo) => (index.where === undefined ? "no condition" : `where ${index.where}`);
+
 const describeIndex = (table: string, index: IndexInfo) =>
-  `${index.unique ? "unique index" : "index"} ${quote(index.name)} on ${quote(table)} ${list(index.columns)}`;
+  `${index.unique ? "unique index" : "index"} ${quote(index.name)} on ${quote(table)} ${list(index.columns)}` +
+  (index.where === undefined ? "" : ` where ${index.where}`);
 
 const describeForeignKey = (table: string, fk: ForeignKeyInfo) =>
   `foreign key${fk.name === null ? "" : ` ${quote(fk.name)}`} on ${quote(table)} ${list(fk.columns)} ` +
@@ -92,7 +95,7 @@ const compareIndexes = (table: string, a: TableInfo, b: TableInfo, options: Requ
     b.indexes,
     options.ignoreNames,
     covers,
-    (index) => String(index.unique)
+    (index) => `${index.unique} ${condition(index)}`
   );
   for (const [x, y] of [...byName, ...byDefinition]) {
     const subject = `index ${quote(x.name)} on ${quote(table)}`;
@@ -104,6 +107,7 @@ const compareIndexes = (table: string, a: TableInfo, b: TableInfo, options: Requ
       const state = (unique: boolean) => (unique ? "unique" : "not unique");
       out.push(`${subject}: ${state(x.unique)} in ${la}, ${state(y.unique)} in ${lb}`);
     }
+    if (x.where !== y.where) out.push(`${subject}: ${condition(x)} in ${la}, ${condition(y)} in ${lb}`);
   }
   for (const index of left) out.push(`${describeIndex(table, index)} exists only in ${la}`);
   for (const index of right) out.push(`${describeIndex(table, index)} exists only in ${lb}`);
@@ -139,6 +143,24 @@ const compareForeignKeys = (
   for (const fk of right) out.push(`${describeForeignKey(table, fk)} exists only in ${lb}`);
 };
 
+const compareChecks = (table: string, a: TableInfo, b: TableInfo, options: Required<CompareOptions>, out: string[]) => {
+  const [la, lb] = options.labels;
+  const covers = (check: CheckInfo) => `(${check.expression})`;
+  const describe = (check: CheckInfo) =>
+    `check${check.name === null ? "" : ` ${quote(check.name)}`} on ${quote(table)} ${covers(check)}`;
+  const { byName, byDefinition, left, right } = match(a.checks, b.checks, options.ignoreNames, covers, () => "");
+  for (const [x, y] of [...byName, ...byDefinition]) {
+    if (!options.ignoreNames && comparableName(x) !== comparableName(y)) {
+      out.push(`check on ${quote(table)} ${covers(x)}: ${naming(x)} in ${la}, ${naming(y)} in ${lb}`);
+    }
+    if (covers(x) !== covers(y)) {
+      out.push(`check ${quote(x.name ?? "")} on ${quote(table)}: ${covers(x)} in ${la}, ${covers(y)} in ${lb}`);
+    }
+  }
+  for (const check of left) out.push(`${describe(check)} exists only in ${la}`);
+  for (const check of right) out.push(`${describe(check)} exists only in ${lb}`);
+};
+
 const compareTables = (a: TableInfo, b: TableInfo, options: Required<CompareOptions>, out: string[]) => {
   const [la, lb] = options.labels;
   const table = a.name;
@@ -162,12 +184,13 @@ const compareTables = (a: TableInfo, b: TableInfo, options: Required<CompareOpti
 
   compareIndexes(table, a, b, options, out);
   compareForeignKeys(table, a, b, options, out);
+  compareChecks(table, a, b, options, out);
 };
 
 /**
  * The differences between two schemas from describeSchema(), as sentences a person can read; empty when they
  * match. Both must come from the same dialect, since types and defaults are compared as each database reports them.
- * The order of tables, columns, indexes and foreign keys does not matter.
+ * The order of tables, columns, indexes, foreign keys and checks does not matter.
  */
 export const compareSchemas = (a: SchemaInfo, b: SchemaInfo, options: CompareOptions = {}): string[] => {
   if (a.dialect !== b.dialect) {

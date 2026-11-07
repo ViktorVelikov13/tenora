@@ -30,6 +30,11 @@ export type IndexInfo = {
   columns: string[];
   unique: boolean;
   /**
+   * The condition of a partial (filtered) index, as the database reports it; absent for a full index. MySQL and
+   * MariaDB have no partial indexes. Knex's unique() on SQL Server makes one: `[email] IS NOT NULL`.
+   */
+  where?: string;
+  /**
    * SQL Server only: the server made up this name, with a random suffix, because the DDL gave none. Two such
    * names compare as equal.
    */
@@ -48,6 +53,15 @@ export type ForeignKeyInfo = {
   systemNamed?: true;
 };
 
+export type CheckInfo = {
+  /** null on SQLite when the constraint was declared without a name. */
+  name: string | null;
+  /** The condition as the database reports it, without CHECK and its parentheses. */
+  expression: string;
+  /** As on IndexInfo: a name SQL Server generated. */
+  systemNamed?: true;
+};
+
 export type TableInfo = {
   name: string;
   /** In table order. */
@@ -58,6 +72,11 @@ export type TableInfo = {
   indexes: IndexInfo[];
   /** Sorted by name, then columns. */
   foreignKeys: ForeignKeyInfo[];
+  /**
+   * Check constraints, sorted by name, then expression. Knex's enu() is one on Postgres and SQLite. Not listed:
+   * Postgres's NOT NULL constraints, and the json_valid() check MariaDB adds to a json column.
+   */
+  checks: CheckInfo[];
 };
 
 export type SchemaInfo = {
@@ -75,7 +94,7 @@ export type ListTablesOptions = {
 };
 
 export type CompareOptions = {
-  /** Match indexes and foreign keys by what they cover instead of by name (default false: names matter). */
+  /** Match indexes, foreign keys and checks by what they cover instead of by name (default false: names matter). */
   ignoreNames?: boolean;
   /** How the two schemas are called in the messages (default ["a", "b"]). */
   labels?: readonly [string, string];

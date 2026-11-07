@@ -55,6 +55,7 @@ describe("comparing described schemas", () => {
         onUpdate: "no action",
       },
     ],
+    checks: [{ name: "posts_title_check", expression: "title <> ''" }],
     ...overrides,
   });
   const schema = (...tables) => ({ dialect: "postgres", tables });
@@ -165,6 +166,31 @@ describe("comparing described schemas", () => {
     ]);
   });
 
+  it("reports a partial index whose condition changed", () => {
+    const partial = table({ indexes: [{ name: "posts_title_index", columns: ["title"], unique: false, where: "title IS NOT NULL" }] });
+    assert.deepEqual(compareSchemas(base, schema(partial)), [
+      'index "posts_title_index" on "posts": no condition in a, where title IS NOT NULL in b',
+    ]);
+    assert.deepEqual(compareSchemas(schema(partial), schema(table({ indexes: [] }))), [
+      'index "posts_title_index" on "posts" (title) where title IS NOT NULL exists only in a',
+    ]);
+  });
+
+  it("reports check constraints", () => {
+    const changed = table({ checks: [{ name: "posts_title_check", expression: "length(title) > 3" }] });
+    assert.deepEqual(compareSchemas(base, schema(changed)), [
+      "check \"posts_title_check\" on \"posts\": (title <> '') in a, (length(title) > 3) in b",
+    ]);
+    const renamed = table({ checks: [{ name: "posts_title_not_empty", expression: "title <> ''" }] });
+    assert.deepEqual(compareSchemas(base, schema(renamed)), [
+      "check on \"posts\" (title <> ''): named \"posts_title_check\" in a, named \"posts_title_not_empty\" in b",
+    ]);
+    assert.deepEqual(compareSchemas(base, schema(renamed), { ignoreNames: true }), []);
+    assert.deepEqual(compareSchemas(base, schema(table({ checks: [] }))), [
+      "check \"posts_title_check\" on \"posts\" (title <> '') exists only in a",
+    ]);
+  });
+
   it("refuses schemas from different dialects", () => {
     assert.throws(() => compareSchemas(base, { dialect: "mysql", tables: [] }), /^Error: Tenora: cannot compare a postgres schema with a mysql schema\.$/);
   });
@@ -176,6 +202,11 @@ const schemaDdl = (dialect, changed = false) => {
   const onDelete = changed ? "cascade" : "set null";
   const nickname = (type) => (changed ? `nickname ${type} null,` : "");
   const nameIndex = changed ? [] : ["create index users_name_status_index on users (name, status)"];
+  // Knex's unique() on SQL Server: a unique index that leaves nulls out. MySQL has no partial indexes.
+  const externalIdIndex =
+    dialect === "mysql" || dialect === "mariadb"
+      ? "create unique index users_external_id_unique on users (external_id)"
+      : "create unique index users_external_id_unique on users (external_id) where external_id is not null";
   switch (dialect) {
     case "postgres":
       return [
@@ -189,7 +220,7 @@ const schemaDdl = (dialect, changed = false) => {
           score numeric(8,2) not null default 0,
           ratio double precision,
           bio text,
-          status varchar(20) not null default 'new',
+          status varchar(20) not null default 'new' check (status in ('new', 'active')),
           created_at timestamptz not null default current_timestamp,
           birthday date,
           external_id uuid,
@@ -197,6 +228,7 @@ const schemaDdl = (dialect, changed = false) => {
         )`,
         "create unique index users_email_unique on users (email)",
         ...nameIndex,
+        externalIdIndex,
         `create table memberships (
           user_id bigint not null references users (id) on delete cascade,
           team_id integer not null,
@@ -226,7 +258,7 @@ const schemaDdl = (dialect, changed = false) => {
           score decimal(8,2) not null default 0,
           ratio double null,
           bio text null,
-          status varchar(20) not null default 'new',
+          status varchar(20) not null default 'new' check (status in ('new', 'active')),
           created_at datetime not null default current_timestamp,
           birthday date null,
           external_id char(36) null,
@@ -234,6 +266,7 @@ const schemaDdl = (dialect, changed = false) => {
           unique key users_email_unique (email)
         )`,
         ...nameIndex,
+        externalIdIndex,
         `create table memberships (
           user_id bigint unsigned not null,
           team_id int unsigned not null,
@@ -263,7 +296,7 @@ const schemaDdl = (dialect, changed = false) => {
           score decimal(8, 2) not null default 0,
           ratio float,
           bio text,
-          status varchar(20) not null default 'new',
+          status varchar(20) not null default 'new' check (status in ('new', 'active')),
           created_at datetime not null default CURRENT_TIMESTAMP,
           birthday date,
           external_id char(36),
@@ -271,6 +304,7 @@ const schemaDdl = (dialect, changed = false) => {
         )`,
         "create unique index users_email_unique on users (email)",
         ...nameIndex,
+        externalIdIndex,
         `create table memberships (
           user_id integer not null references users (id) on delete cascade,
           team_id integer not null,
@@ -301,7 +335,7 @@ const schemaDdl = (dialect, changed = false) => {
           score decimal(8,2) not null default 0,
           ratio float null,
           bio nvarchar(max) null,
-          status nvarchar(20) not null constraint users_status_default default 'new',
+          status nvarchar(20) not null constraint users_status_default default 'new' check (status in ('new', 'active')),
           created_at datetime2 not null default current_timestamp,
           birthday date null,
           external_id uniqueidentifier null,
@@ -309,6 +343,7 @@ const schemaDdl = (dialect, changed = false) => {
         )`,
         "create unique index users_email_unique on users (email)",
         ...nameIndex,
+        externalIdIndex,
         `create table memberships (
           user_id bigint not null references users (id) on delete cascade,
           team_id int not null,
@@ -455,6 +490,7 @@ const expectedTables = (dialect) => {
       // SQLite names the index of a UNIQUE constraint itself.
       indexes: [{ name: dialect === "sqlite" ? "sqlite_autoindex_teams_1" : "teams_name_unique", columns: ["name"], unique: true }],
       foreignKeys: [],
+      checks: [],
     },
     users: {
       name: "users",
@@ -462,9 +498,33 @@ const expectedTables = (dialect) => {
       primaryKey: ["id"],
       indexes: [
         { name: "users_email_unique", columns: ["email"], unique: true },
+        {
+          name: "users_external_id_unique",
+          columns: ["external_id"],
+          unique: true,
+          ...{
+            postgres: { where: "external_id IS NOT NULL" },
+            sqlite: { where: "external_id is not null" },
+            mssql: { where: "[external_id] IS NOT NULL" },
+          }[dialect],
+        },
         { name: "users_name_status_index", columns: ["name", "status"], unique: false },
       ],
       foreignKeys: [],
+      // Each database names an unnamed check its own way and keeps the condition in its own words.
+      checks: [
+        {
+          postgres: {
+            name: "users_status_check",
+            expression: "status::text = ANY (ARRAY['new'::character varying, 'active'::character varying]::text[])",
+          },
+          mysql: { name: "users_chk_1", expression: "(`status` in (_utf8mb4'new',_utf8mb4'active'))" },
+          mariadb: { name: "status", expression: "`status` in ('new','active')" },
+          sqlite: { name: null, expression: "status in ('new', 'active')" },
+          // SQL Server rewrites IN as ORs, last value first.
+          mssql: { name: "(generated)", expression: "[status]='active' OR [status]='new'", systemNamed: true },
+        }[dialect],
+      ],
     },
     memberships: {
       name: "memberships",
@@ -481,6 +541,7 @@ const expectedTables = (dialect) => {
         ...(dialect === "mysql" || dialect === "mariadb" ? [{ name: "user_id", columns: ["user_id"], unique: false }] : []),
       ],
       foreignKeys: dialect === "postgres" ? [namedForeignKey, unnamedForeignKey] : [unnamedForeignKey, namedForeignKey],
+      checks: [],
     },
     posts: {
       name: "posts",
@@ -502,6 +563,7 @@ const expectedTables = (dialect) => {
           onUpdate: noAction,
         },
       ],
+      checks: [],
     },
   };
 };
@@ -604,6 +666,12 @@ describe("introspection against a real database", () => {
               fk.name = "(generated)";
             }
           }
+          for (const check of actual.checks) {
+            if (check.systemNamed) {
+              assert.match(check.name, /^CK__users__status__[0-9A-F]{8}$/);
+              check.name = "(generated)";
+            }
+          }
           assert.deepEqual(actual, expected[name], name);
         }
       });
@@ -686,7 +754,8 @@ describe("introspecting SQLite's DDL", () => {
         parent_code text references "Parent Table" ("code") on update set null,
         note text check (note <> 'references x(y)') default ('a, b'),
         /* a key, later */
-        constraint child_pk primary key (id)
+        constraint child_pk primary key (id),
+        constraint "positive id" check (id > 0)
       ) without rowid`,
       "create index child_note_lower on child (lower(note), id)",
     ]) {
@@ -703,6 +772,10 @@ describe("introspecting SQLite's DDL", () => {
     assert.deepEqual(child.columns[0], column("id", "integer", "integer", { primaryKey: true }));
     assert.equal(child.columns[3].default, "'a, b'");
     assert.deepEqual(child.indexes, [{ name: "child_note_lower", columns: ["lower(note)", "id"], unique: false }]);
+    assert.deepEqual(child.checks, [
+      { name: null, expression: "note <> 'references x(y)'" },
+      { name: "positive id", expression: "id > 0" },
+    ]);
     assert.deepEqual(child.foreignKeys, [
       {
         name: null,

@@ -10,6 +10,7 @@ import type { Introspector, ListTablesOptions, SchemaInfo, TableInfo } from "./t
 export { compareSchemas } from "./compare";
 export {
   BOOKKEEPING_TABLES,
+  type CheckInfo,
   type ColumnInfo,
   type CompareOptions,
   type ForeignKeyInfo,

@@ -1,4 +1,4 @@
-import type { ColumnInfo, ForeignKeyInfo, IndexInfo, ReferentialAction } from "./types";
+import type { CheckInfo, ColumnInfo, ForeignKeyInfo, IndexInfo, ReferentialAction } from "./types";
 
 /** Splits "timestamp(3) with time zone" into "timestamp with time zone" and ["3"]. */
 export const splitType = (raw: string): { base: string; args: string[] } => {
@@ -84,6 +84,9 @@ const byNameThenColumns = (
 export const sortIndexes = (indexes: IndexInfo[]) => indexes.sort(byNameThenColumns);
 
 export const sortForeignKeys = (foreignKeys: ForeignKeyInfo[]) => foreignKeys.sort(byNameThenColumns);
+
+export const sortChecks = (checks: CheckInfo[]) =>
+  checks.sort((a, b) => compareText(a.name ?? "", b.name ?? "") || compareText(a.expression, b.expression));
 
 /** Groups catalog rows that list one key column each into one entry per index or constraint, in key order. */
 export const groupBy = <Row, Key>(rows: Row[], key: (row: Row) => Key): Map<Key, Row[]> => {

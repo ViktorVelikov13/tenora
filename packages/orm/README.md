@@ -214,6 +214,7 @@ await describeTable(db, "posts");
 //   indexes: [{ name: "posts_author_id_title_index", columns: ["author_id", "title"], unique: false }],
 //   foreignKeys: [{ name: "posts_author_id_foreign", columns: ["author_id"], referencedTable: "users",
 //                   referencedColumns: ["id"], onDelete: "set null", onUpdate: "no action" }],
+//   checks: [{ name: "posts_status_check", expression: "status = ANY (ARRAY['draft'::text, 'published'::text])" }],
 // }
 
 const knexSide = await describeSchema(knexDb, { exclude: BOOKKEEPING_TABLES });
@@ -250,25 +251,33 @@ What a column reports:
   but may reuse them, so it is not auto-increment; it is reported as not nullable, since the rowid cannot be null.
   A Postgres identity column has no default and a `serial` keeps its `nextval()`, so the two stay apart.
 
+Indexes leave out the primary key's own index and list unique constraints as unique indexes. A partial (filtered)
+index has its condition in `where`, as the database reports it: `external_id IS NOT NULL` on Postgres,
+`[external_id] IS NOT NULL` on SQL Server (where Knex's `unique()` makes one), the text of the `CREATE INDEX` on
+SQLite. `checks` lists check constraints with their condition, without `CHECK` and its parentheses, in each
+database's words; Knex's `enu()` is one on Postgres and SQLite.
+
 Dialect notes:
 
 - MariaDB stores `json` as `longtext` with a `json_valid()` check; such a column has `type: "json"` and
-  `rawType: "longtext"`.
+  `rawType: "longtext"`, and the check is not listed. MySQL's escaped quotes in a check (`_utf8mb4\'new\'`) are
+  unescaped.
 - MySQL and MariaDB create an index for a foreign key that no index starts with; it is listed like any other. A
   prefix index shows its key as `email(191)`, and an expression key (Postgres, MySQL 8, SQLite) as its SQL text.
-- SQLite's pragmas have no constraint names, so foreign key names are read from the `CREATE TABLE` statement SQLite
-  keeps; a foreign key declared without a name has `name: null`. The index behind a `UNIQUE` constraint has the name
-  SQLite gives it, `sqlite_autoindex_<table>_<n>`.
-- SQL Server names unnamed constraints itself, with a random suffix (`FK__posts__autho__3B75D760`). Such indexes and
-  foreign keys carry `systemNamed: true`, and `compareSchemas` treats two such names as equal.
+- SQLite's pragmas have no constraint names and no checks, so foreign key names and check constraints are read from
+  the `CREATE TABLE` statement SQLite keeps; a constraint declared without a name has `name: null`. The index behind a
+  `UNIQUE` constraint has the name SQLite gives it, `sqlite_autoindex_<table>_<n>`.
+- SQL Server names unnamed constraints itself, with a random suffix (`FK__posts__autho__3B75D760`). Such indexes,
+  foreign keys and checks carry `systemNamed: true`, and `compareSchemas` treats two such names as equal.
 
 `compareSchemas(a, b, options?)` compares two described schemas of the same dialect and returns sentences, empty when
-they match: tables, columns, indexes and foreign keys on one side only, and changed types, nullability, defaults,
-auto-increment, primary keys, uniqueness and referential actions. Types and defaults are compared as the database
-reports them, which is why both sides must come from the same dialect. The order of tables, columns, indexes and
-foreign keys is not compared. Index and foreign key names matter unless `ignoreNames: true`, which matches them by the
-columns they cover. `labels` names the two sides in the sentences (default `["a", "b"]`).
+they match: tables, columns, indexes, foreign keys and checks on one side only, and changed types, nullability,
+defaults, auto-increment, primary keys, uniqueness, index conditions, referential actions and check conditions. Types,
+defaults and conditions are compared as the database reports them, which is why both sides must come from the same
+dialect. The order of tables, columns, indexes, foreign keys and checks is not compared. Their names matter unless
+`ignoreNames: true`, which matches them by what they cover. `labels` names the two sides in the sentences (default
+`["a", "b"]`).
 
-Not compared yet: check constraints, partial index conditions (including the `WHERE … IS NOT NULL` filter Knex adds to
-unique indexes on SQL Server), whether a unique key is a constraint or an index, index sort order, MySQL's
-`ON UPDATE CURRENT_TIMESTAMP`, generated columns, collations and comments.
+Not compared yet: whether a unique key is a constraint or an index, index sort order and type (`gin`, `hash`),
+MySQL's `ON UPDATE CURRENT_TIMESTAMP`, SQL Server's default constraint names, generated columns, collations and
+comments.

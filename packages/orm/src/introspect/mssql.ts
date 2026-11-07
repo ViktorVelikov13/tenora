@@ -1,6 +1,6 @@
 import { sql } from "../sql";
-import { groupBy, referentialAction, sortForeignKeys, sortIndexes, truthy, typeSizes } from "./normalize";
-import type { ColumnInfo, ForeignKeyInfo, IndexInfo, Introspector } from "./types";
+import { groupBy, referentialAction, sortChecks, sortForeignKeys, sortIndexes, truthy, typeSizes } from "./normalize";
+import type { CheckInfo, ColumnInfo, ForeignKeyInfo, IndexInfo, Introspector } from "./types";
 
 const inTable = (table: string) => sql`t.schema_id = schema_id() and t.name = ${table}`;
 
@@ -110,10 +110,11 @@ export const mssql: Introspector = {
       is_primary_key: unknown;
       is_unique: unknown;
       system_named: unknown;
+      filter: string | null;
       column_name: string;
     }>(
       sql`select i.name as name, i.is_primary_key as is_primary_key, i.is_unique as is_unique,
-          k.is_system_named as system_named, c.name as column_name
+          k.is_system_named as system_named, i.filter_definition as filter, c.name as column_name
         from sys.indexes i
         join sys.tables t on t.object_id = i.object_id
         join sys.index_columns ic on ic.object_id = i.object_id and ic.index_id = i.index_id
@@ -169,6 +170,8 @@ export const mssql: Introspector = {
         name: indexName,
         columns: rows.map((row) => row.column_name),
         unique: truthy(rows[0].is_unique),
+        // Stored parenthesized like a default: ([email] IS NOT NULL).
+        ...(rows[0].filter === null ? {} : { where: unwrap(rows[0].filter) }),
         ...(truthy(rows[0].system_named) ? { systemNamed: true as const } : {}),
       })
     );
@@ -185,6 +188,26 @@ export const mssql: Introspector = {
       })
     );
 
-    return { name, columns, primaryKey, indexes: sortIndexes(indexes), foreignKeys: sortForeignKeys(foreignKeys) };
+    const checkRows = await db.raw<{ name: string; definition: string; system_named: unknown }>(
+      sql`select cc.name as name, cc.definition as definition, cc.is_system_named as system_named
+        from sys.check_constraints cc join sys.tables t on t.object_id = cc.parent_object_id
+        where ${inTable(name)}`
+    );
+    const checks = checkRows.map(
+      (row): CheckInfo => ({
+        name: row.name,
+        expression: unwrap(row.definition),
+        ...(truthy(row.system_named) ? { systemNamed: true as const } : {}),
+      })
+    );
+
+    return {
+      name,
+      columns,
+      primaryKey,
+      indexes: sortIndexes(indexes),
+      foreignKeys: sortForeignKeys(foreignKeys),
+      checks: sortChecks(checks),
+    };
   },
 };

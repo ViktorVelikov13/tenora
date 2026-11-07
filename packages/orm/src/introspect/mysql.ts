@@ -1,6 +1,15 @@
 import type { Connection } from "../connection";
 import { sql } from "../sql";
-import { groupBy, referentialAction, sortForeignKeys, sortIndexes, splitType, truthy, typeSizes } from "./normalize";
+import {
+  groupBy,
+  referentialAction,
+  sortChecks,
+  sortForeignKeys,
+  sortIndexes,
+  splitType,
+  truthy,
+  typeSizes,
+} from "./normalize";
 import type { ColumnInfo, Introspector } from "./types";
 
 // MySQL and MariaDB differ in what information_schema reports, and a MariaDB server reached through mysql2 without
@@ -143,6 +152,21 @@ export const mysql: Introspector = {
         order by k.constraint_name, k.ordinal_position`
     );
 
+    // MariaDB's check_constraints has the table name, MySQL's only the constraint's; both are unique per database.
+    // The json_valid() check MariaDB adds to a json column is the column's type, not a check.
+    const checkRows = await db.raw<{ name: string; expression: string }>(
+      mariadb
+        ? sql`select constraint_name as name, check_clause as ${sql.ref("expression")}
+            from information_schema.check_constraints
+            where constraint_schema = database() and table_name = ${name}
+              and check_clause <> concat('json_valid(\`', constraint_name, '\`)')`
+        : sql`select cc.constraint_name as name, cc.check_clause as ${sql.ref("expression")}
+            from information_schema.table_constraints tc
+            join information_schema.check_constraints cc
+              on cc.constraint_schema = tc.constraint_schema and cc.constraint_name = tc.constraint_name
+            where tc.table_schema = database() and tc.table_name = ${name} and tc.constraint_type = 'CHECK'`
+    );
+
     const indexGroups = groupBy(indexRows, (row) => row.name);
     const primaryKey = (indexGroups.get("PRIMARY") ?? []).map((row) => row.column_name ?? "");
     indexGroups.delete("PRIMARY");
@@ -182,6 +206,16 @@ export const mysql: Introspector = {
       onUpdate: referentialAction(rows[0].on_update),
     }));
 
-    return { name, columns, primaryKey, indexes: sortIndexes(indexes), foreignKeys: sortForeignKeys(foreignKeys) };
+    return {
+      name,
+      columns,
+      primaryKey,
+      indexes: sortIndexes(indexes),
+      foreignKeys: sortForeignKeys(foreignKeys),
+      // MySQL escapes the quotes in a check's text: _utf8mb4\'new\' → _utf8mb4'new'.
+      checks: sortChecks(
+        checkRows.map((row) => ({ name: row.name, expression: mariadb ? row.expression : row.expression.replace(/\\'/g, "'") }))
+      ),
+    };
   },
 };

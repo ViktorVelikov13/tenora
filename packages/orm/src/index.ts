@@ -27,6 +27,7 @@ export {
   hasColumn,
   hasTable,
   listTables,
+  type CheckInfo,
   type ColumnInfo,
   type CompareOptions,
   type ForeignKeyInfo,

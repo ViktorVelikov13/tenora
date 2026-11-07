@@ -1,5 +1,14 @@
 import { sql } from "../sql";
-import { groupBy, referentialAction, sortForeignKeys, sortIndexes, splitType, truthy, typeSizes } from "./normalize";
+import {
+  groupBy,
+  referentialAction,
+  sortChecks,
+  sortForeignKeys,
+  sortIndexes,
+  splitType,
+  truthy,
+  typeSizes,
+} from "./normalize";
 import type { ColumnInfo, Introspector, ReferentialAction } from "./types";
 
 // pg_catalog rather than information_schema for constraints: constraint names are unique per table, not per schema,
@@ -103,8 +112,8 @@ export const postgres: Introspector = {
     ).map((row) => row.name);
 
     // An expression in an index has attnum 0; pg_get_indexdef() gives its text. INCLUDE columns are not keys.
-    const indexRows = await db.raw<{ name: string; is_unique: unknown; column_name: string }>(
-      sql`select ic.relname as name, i.indisunique as is_unique,
+    const indexRows = await db.raw<{ name: string; is_unique: unknown; predicate: string | null; column_name: string }>(
+      sql`select ic.relname as name, i.indisunique as is_unique, pg_get_expr(i.indpred, i.indrelid, true) as predicate,
           case when k.attnum = 0 then pg_get_indexdef(i.indexrelid, k.position::int, true) else a.attname end as column_name
         from pg_catalog.pg_index i
         join pg_catalog.pg_class ic on ic.oid = i.indexrelid
@@ -135,6 +144,12 @@ export const postgres: Introspector = {
         order by con.conname, k.position`
     );
 
+    // Only CHECK constraints: Postgres 18 lists NOT NULL constraints here too, as contype 'n'.
+    const checkRows = await db.raw<{ name: string; definition: string }>(
+      sql`select conname as name, pg_get_constraintdef(oid, true) as definition
+        from pg_catalog.pg_constraint where conrelid = ${oid} and contype = 'c'`
+    );
+
     const columns = columnRows.map((row): ColumnInfo => {
       const { type, args } = baseType(row.raw_type);
       const fromSequence = row.default_value?.startsWith("nextval(") ?? false;
@@ -154,6 +169,7 @@ export const postgres: Introspector = {
       name: indexName,
       columns: rows.map((row) => row.column_name),
       unique: truthy(rows[0].is_unique),
+      ...(rows[0].predicate === null ? {} : { where: rows[0].predicate }),
     }));
 
     const foreignKeys = [...groupBy(foreignKeyRows, (row) => row.name)].map(([keyName, rows]) => ({
@@ -165,7 +181,20 @@ export const postgres: Introspector = {
       onUpdate: ACTIONS[rows[0].on_update] ?? referentialAction(rows[0].on_update),
     }));
 
+    // CHECK (status = 'new'::text) → status = 'new'::text
+    const checks = checkRows.map((row) => ({
+      name: row.name,
+      expression: /^CHECK \((.*)\)$/s.exec(row.definition)?.[1] ?? row.definition,
+    }));
+
     // The lookup matched the name exactly, so it is the stored name.
-    return { name: table, columns, primaryKey, indexes: sortIndexes(indexes), foreignKeys: sortForeignKeys(foreignKeys) };
+    return {
+      name: table,
+      columns,
+      primaryKey,
+      indexes: sortIndexes(indexes),
+      foreignKeys: sortForeignKeys(foreignKeys),
+      checks: sortChecks(checks),
+    };
   },
 };
