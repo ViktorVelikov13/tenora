@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { checkTenantSchemaDump } from "../factory/schemaFile";
 import { createTenoraFactory } from "../knexFactory";
 import type { CliConfig } from "../types";
 import { listTenantsFromRegistry } from "../tenantRegistry";
@@ -178,6 +179,39 @@ const addTenantCommands = (program: Command) => {
           console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "Nothing to rollback"}`);
           await tenantKnex.destroy();
         }
+      } finally {
+        await manager.destroyAll();
+      }
+    });
+
+  program
+    .command("schema:dump:tenants")
+    .option("-c, --config <path>", "config file", "tenora.config.js")
+    .option("--prune", "delete the migration files the dump now contains")
+    .option("--check", "only check that the dump contains every migration file, without a database")
+    .description("Write the tenant database structure to a file that new tenants load instead of running every migration")
+    .action(async (opts: { config: string; prune?: boolean; check?: boolean }) => {
+      const cfg = await loadCliConfig(opts.config);
+      if (opts.check) {
+        const { file, exists, missing } = await checkTenantSchemaDump(cfg);
+        if (!exists) {
+          console.error(`Tenora: there is no schema dump at ${file}. Run tenora schema:dump:tenants.`);
+          process.exitCode = 1;
+        } else if (missing.length) {
+          console.error(
+            `Tenora: the schema dump ${file} is out of date. It does not contain: ${missing.join(", ")}. Run tenora schema:dump:tenants.`
+          );
+          process.exitCode = 1;
+        } else {
+          console.log(`Schema dump ${file} is up to date`);
+        }
+        return;
+      }
+      const manager = createTenoraFactory(cfg);
+      try {
+        const { file, migrations, pruned } = await manager.dumpTenantSchema({ prune: opts.prune });
+        console.log(`Schema dump ${file}: ${migrations.length} migrations`);
+        for (const prunedFile of pruned) console.log(`Pruned ${prunedFile}`);
       } finally {
         await manager.destroyAll();
       }

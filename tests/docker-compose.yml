@@ -17,8 +17,10 @@ services:
       timeout: 3s
       retries: 30
 
+  # Lets the non-SUPER tenant user create triggers while binary logging is on, as in production.
   mysql:
     image: mysql:9
+    command: ["--log-bin-trust-function-creators=1"]
     environment:
       MYSQL_ROOT_PASSWORD: Tenora_test_pw1
     ports:
@@ -33,6 +35,7 @@ services:
 
   mariadb:
     image: mariadb:12
+    command: ["--log-bin-trust-function-creators=1"]
     environment:
       MARIADB_ROOT_PASSWORD: Tenora_test_pw1
     ports:
