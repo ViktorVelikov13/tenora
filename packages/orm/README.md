@@ -187,3 +187,88 @@ What happens, and why:
   `trx.run(fn)`, `trx.commit()`, `trx.rollback()`.
 
 On SQLite there is one connection, so a query outside an open transaction waits until it ends.
+
+## Introspection
+
+Tenora reads a schema back from the database catalog, on all five databases and without dump tools. The schema
+builder uses it for `hasTable` and `hasColumn`, and `tenora upgrade` uses it to prove that converted Knex migrations
+build the same schema as the originals.
+
+```ts
+import { BOOKKEEPING_TABLES, compareSchemas, describeSchema, describeTable, hasColumn, hasTable, listTables } from "@tenora/orm";
+
+await hasTable(db, "users");                                  // true
+await hasColumn(db, "users", "email");                        // true
+await listTables(db, { exclude: BOOKKEEPING_TABLES });        // without tenora_migrations* and knex_migrations*
+
+await describeTable(db, "posts");
+// {
+//   name: "posts",
+//   columns: [
+//     { name: "id", type: "integer", rawType: "integer", length: null, precision: null, scale: null,
+//       nullable: false, default: "nextval('posts_id_seq')", autoIncrement: true, primaryKey: true },
+//     { name: "title", type: "varchar", rawType: "character varying(200)", length: 200, … },
+//     …
+//   ],
+//   primaryKey: ["id"],
+//   indexes: [{ name: "posts_author_id_title_index", columns: ["author_id", "title"], unique: false }],
+//   foreignKeys: [{ name: "posts_author_id_foreign", columns: ["author_id"], referencedTable: "users",
+//                   referencedColumns: ["id"], onDelete: "set null", onUpdate: "no action" }],
+// }
+
+const knexSide = await describeSchema(knexDb, { exclude: BOOKKEEPING_TABLES });
+const tenoraSide = await describeSchema(tenoraDb, { exclude: BOOKKEEPING_TABLES });
+compareSchemas(knexSide, tenoraSide, { labels: ["Knex", "Tenora"] });
+// [
+//   'column "posts"."title": type character varying(200) in Knex, character varying(250) in Tenora',
+//   'foreign key "posts_author_id_foreign" on "posts": on delete set null in Knex, cascade in Tenora',
+//   'column "users"."nickname" exists only in Tenora',
+//   'index "users_name_status_index" on "users" (name, status) exists only in Knex',
+// ]
+```
+
+Everything is scoped to the connection's current schema (`current_schema()` on Postgres, `schema_name()` on SQL
+Server), its database (`database()` on MySQL and MariaDB), or SQLite's main database, and joins the ambient
+transaction, so a migration sees the tables it has just created. Table names match as the database matches them;
+`hasColumn` matches column names exactly on Postgres and ignores case elsewhere (on SQL Server, as the collation
+says). `describeTable` throws for a table that does not exist. `exclude` takes exact names, patterns where `*` matches
+anything, and regular expressions, and ignores case.
+
+What a column reports:
+
+- `rawType` is the type as the database spells it (`character varying(255)`, `int unsigned`, `nvarchar(max)`), and
+  `type` its lowercase base (`varchar`, `int`, `nvarchar`); Postgres's long names are shortened to `varchar`, `char`,
+  `timestamp`, `timestamptz`, `time`, `timetz` and `varbit`. `length` is set for sized character and binary types,
+  `precision` and `scale` for decimals, and `precision` alone for fractional seconds where the type declares them.
+- `default` is the expression the database reports, lightly normalized: Postgres's casts on literals go
+  (`'new'::character varying` → `'new'`, `nextval('posts_id_seq'::regclass)` → `nextval('posts_id_seq')`); MySQL's
+  unquoted literals are quoted as MariaDB quotes them (`new` → `'new'`); MariaDB's `NULL` for "no default" becomes
+  `null`; SQL Server's wrapping parentheses go (`((0))` → `0`, `(getdate())` → `getdate()`). Expressions keep each
+  database's spelling (`CURRENT_TIMESTAMP` on MySQL, `current_timestamp()` on MariaDB).
+- `autoIncrement` is a Postgres identity column or `nextval()` default (`serial`), MySQL's `auto_increment`, SQL
+  Server's `identity`, and SQLite's `AUTOINCREMENT` keyword. A plain SQLite `INTEGER PRIMARY KEY` also gets row ids,
+  but may reuse them, so it is not auto-increment; it is reported as not nullable, since the rowid cannot be null.
+  A Postgres identity column has no default and a `serial` keeps its `nextval()`, so the two stay apart.
+
+Dialect notes:
+
+- MariaDB stores `json` as `longtext` with a `json_valid()` check; such a column has `type: "json"` and
+  `rawType: "longtext"`.
+- MySQL and MariaDB create an index for a foreign key that no index starts with; it is listed like any other. A
+  prefix index shows its key as `email(191)`, and an expression key (Postgres, MySQL 8, SQLite) as its SQL text.
+- SQLite's pragmas have no constraint names, so foreign key names are read from the `CREATE TABLE` statement SQLite
+  keeps; a foreign key declared without a name has `name: null`. The index behind a `UNIQUE` constraint has the name
+  SQLite gives it, `sqlite_autoindex_<table>_<n>`.
+- SQL Server names unnamed constraints itself, with a random suffix (`FK__posts__autho__3B75D760`). Such indexes and
+  foreign keys carry `systemNamed: true`, and `compareSchemas` treats two such names as equal.
+
+`compareSchemas(a, b, options?)` compares two described schemas of the same dialect and returns sentences, empty when
+they match: tables, columns, indexes and foreign keys on one side only, and changed types, nullability, defaults,
+auto-increment, primary keys, uniqueness and referential actions. Types and defaults are compared as the database
+reports them, which is why both sides must come from the same dialect. The order of tables, columns, indexes and
+foreign keys is not compared. Index and foreign key names matter unless `ignoreNames: true`, which matches them by the
+columns they cover. `labels` names the two sides in the sentences (default `["a", "b"]`).
+
+Not compared yet: check constraints, partial index conditions (including the `WHERE … IS NOT NULL` filter Knex adds to
+unique indexes on SQL Server), whether a unique key is a constraint or an index, index sort order, MySQL's
+`ON UPDATE CURRENT_TIMESTAMP`, generated columns, collations and comments.
