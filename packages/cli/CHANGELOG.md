@@ -1,5 +1,27 @@
 # @tenora/cli
 
+## 0.3.0
+
+### Minor Changes
+
+- 2b4055e: Add `dropTenantDb()` and `tenora drop:tenant <id> --force`, which permanently delete a tenant database, its user and its registry entry.
+  
+  Fixes:
+  
+  - Postgres 15+: tenants with a password can now create tables.
+  - SQL Server: `createTenantDb` no longer fails at the registry step, `--create-base` works when the database exists, and the `sqlserver` client alias works.
+  - `tenant.databaseName` is now used when creating server databases, not only when connecting.
+  - The generated registry migration now works in `"type": "commonjs"` projects.
+  - Migration templates keep multi-word table names, and `add_x_to_y_table` now alters the table instead of creating it.
+  - The CLI now honours `TENORA_CONFIG`, as documented.
+- 47866d4: Update dependencies to their latest versions, including commander 15, knex 3.3 and objection 4. Node.js 22.12 or newer is now required.
+
+### Patch Changes
+
+- Updated dependencies [2b4055e]
+- Updated dependencies [47866d4]
+  - @tenora/core@0.3.0
+
 ## 0.2.1
 
 ### Patch Changes
