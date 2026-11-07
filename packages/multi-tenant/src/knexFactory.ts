@@ -3,4 +3,5 @@ export {
   createTenoraFactory,
   createTenoraFactoryAsync,
   createKnexFactory,
+  checkTenantSchemaDump,
 } from "@tenora/core";

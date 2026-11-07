@@ -52,3 +52,15 @@ export const resolveKnex = (): KnexModule => {
     return normalizeKnexModule(packageRequire("knex"));
   }
 };
+
+/** A require rooted in the same knex package that `resolveKnex` returns, for its internal modules. */
+export const resolveKnexRequire = (): NodeRequire => {
+  ensureProjectNodeModulesOnNodePath();
+  const projectRequire = resolveProjectRequire();
+
+  try {
+    return createRequire(projectRequire.resolve("knex"));
+  } catch {
+    return createRequire(packageRequire.resolve("knex"));
+  }
+};

@@ -1,7 +1,15 @@
+import { randomBytes } from "crypto";
 import fs from "fs";
 import type { Knex } from "knex";
+import os from "os";
 import path from "path";
-import type { DropTenantOptions, MultiTenantOptions, TenantManager } from "../types";
+import type {
+  DropTenantOptions,
+  MultiTenantOptions,
+  SchemaDumpOptions,
+  SchemaDumpResult,
+  TenantManager,
+} from "../types";
 import {
   ensureRegistryTable,
   listTenantsFromRegistry,
@@ -9,6 +17,17 @@ import {
   upsertTenantInRegistry,
 } from "../tenantRegistry";
 import { resolveKnex } from "../runtime/resolveKnex";
+import {
+  pruneMigrationFiles,
+  readSchemaDump,
+  resolveSchemaDialect,
+  resolveSchemaFile,
+  resolveTenantMigrations,
+  withSchemaDumpMigrations,
+  writeSchemaDump,
+  type SchemaDump,
+} from "./schemaFile";
+import { dumpMysql, dumpPostgres, dumpSqlite, loadSchemaSql, type MigrationTables } from "./schemaSql";
 import {
   escapeMssqlIdent,
   escapeMysqlIdent,
@@ -144,6 +163,15 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
 
   const baseClient = knex(baseKnexConfig);
 
+  const tenantMigrations = resolveTenantMigrations(resolved);
+  const schemaFile = resolveSchemaFile(resolved);
+  const schemaDialect = resolveSchemaDialect(client);
+  const migrationTables: MigrationTables = {
+    tableName: tenantMigrations?.tableName ?? "knex_migrations",
+    schemaName: tenantMigrations?.schemaName ?? undefined,
+  };
+  const currentSchemaDump = () => (schemaFile ? readSchemaDump(schemaFile) : undefined);
+
   const resolveTenantDatabaseName = (tenantId: string): string =>
     tenant.databaseName ? tenant.databaseName(tenantId) : tenantId;
 
@@ -201,7 +229,7 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       connection.ssl = tenant.ssl;
     }
 
-    return {
+    const config: Knex.Config = {
       client,
       useNullAsDefault: true,
       connection,
@@ -210,6 +238,37 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       seeds: tenant.seedsDir ? { directory: tenant.seedsDir } : undefined,
       ...knexOptions,
     };
+    const dump = currentSchemaDump();
+    if (dump && config.migrations) {
+      config.migrations = withSchemaDumpMigrations(config.migrations, dump);
+    }
+    return config;
+  };
+
+  const migrationsTable = (db: Knex) =>
+    migrationTables.schemaName
+      ? db(migrationTables.tableName).withSchema(migrationTables.schemaName)
+      : db(migrationTables.tableName);
+
+  const hasMigrationsTable = (db: Knex) =>
+    (migrationTables.schemaName ? db.schema.withSchema(migrationTables.schemaName) : db.schema).hasTable(
+      migrationTables.tableName
+    );
+
+  // A connection of its own: Postgres dumps clear search_path for the rest of the session, and
+  // MySQL needs multipleStatements to load the dump in one round trip.
+  const loadSchemaDump = async (config: Knex.Config, dump: SchemaDump) => {
+    const connection = isMysqlClient(client)
+      ? { ...(config.connection as Record<string, unknown>), multipleStatements: true }
+      : config.connection;
+    const loader = knex({ ...config, connection, pool: { min: 0, max: 1 } } as Knex.Config);
+    try {
+      await loadSchemaSql(loader, client, dump.sql);
+    } catch (error) {
+      throw new Error(`Tenora: loading the schema dump ${dump.file} failed: ${(error as Error).message}`);
+    } finally {
+      await loader.destroy();
+    }
   };
 
   const getTenant = (tenantId: string, password?: string): Knex => {
@@ -339,8 +398,14 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       }
     }
 
-    const tenantKnex = knex(buildTenantConfig(tenantId, tenantPassword));
+    const tenantConfig = buildTenantConfig(tenantId, tenantPassword);
+    const tenantKnex = knex(tenantConfig);
     try {
+      // Only into a database with no migrations yet; a reused SQLite file may already have them.
+      const dump = currentSchemaDump();
+      if (dump && !(await hasMigrationsTable(tenantKnex))) {
+        await loadSchemaDump(tenantConfig, dump);
+      }
       if (tenant.migrationsDir) {
         await tenantKnex.migrate.latest();
       }
@@ -412,11 +477,96 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
     await removeTenantFromRegistry(baseClient, resolved, tenantId);
   };
 
+  const createScratchDatabase = async (database: string) => {
+    if (isSqliteClient(client)) return;
+    const admin = knex({ ...baseKnexConfig, connection: buildBaseConnection(resolveAdminDatabase()) });
+    try {
+      if (isPostgresClient(client)) {
+        await admin.raw(`CREATE DATABASE "${escapePgIdent(database)}"`);
+      } else {
+        await admin.raw(`CREATE DATABASE \`${escapeMysqlIdent(database)}\``);
+      }
+    } finally {
+      await admin.destroy();
+    }
+  };
+
+  const dropScratchDatabase = async (database: string) => {
+    if (isSqliteClient(client)) {
+      for (const file of [database, `${database}-wal`, `${database}-shm`]) {
+        fs.rmSync(file, { force: true });
+      }
+      return;
+    }
+    const admin = knex({ ...baseKnexConfig, connection: buildBaseConnection(resolveAdminDatabase()) });
+    try {
+      if (isPostgresClient(client)) {
+        await admin.raw(`DROP DATABASE IF EXISTS "${escapePgIdent(database)}" WITH (FORCE)`);
+      } else {
+        await admin.raw(`DROP DATABASE IF EXISTS \`${escapeMysqlIdent(database)}\``);
+      }
+    } finally {
+      await admin.destroy();
+    }
+  };
+
+  /**
+   * Builds the schema in a throwaway database rather than copying a tenant, so the dump holds exactly
+   * what the migrations produce. A previous dump is loaded first, because pruned migrations cannot run.
+   */
+  const dumpTenantSchema = async (options: SchemaDumpOptions = {}): Promise<SchemaDumpResult> => {
+    if (!schemaDialect || !schemaFile || !tenantMigrations?.directory) {
+      throw new Error(
+        `Tenora: schema dumps need tenant.migrationsDir, a client other than SQL Server, and tenant.schemaFile not set to false (client is "${client}").`
+      );
+    }
+    const previous = currentSchemaDump();
+    const suffix = randomBytes(6).toString("hex");
+    const scratch = isSqliteClient(client)
+      ? path.join(os.tmpdir(), `tenora_schema_${suffix}.sqlite`)
+      : `tenora_schema_${suffix}`;
+    const scratchConfig: Knex.Config = {
+      ...baseKnexConfig,
+      connection: buildBaseConnection(scratch),
+      pool: { min: 0, max: 1 },
+      migrations: previous ? withSchemaDumpMigrations(tenantMigrations, previous) : tenantMigrations,
+    };
+
+    let migrations: string[] = [];
+    let body = "";
+    await createScratchDatabase(scratch);
+    try {
+      if (previous) await loadSchemaDump(scratchConfig, previous);
+      const scratchKnex = knex(scratchConfig);
+      try {
+        await scratchKnex.migrate.latest();
+        const rows: { name: string }[] = await migrationsTable(scratchKnex).select("name").orderBy("id");
+        migrations = rows.map((row) => row.name);
+        const connection = scratchConfig.connection as Record<string, unknown>;
+        body =
+          schemaDialect === "sqlite"
+            ? await dumpSqlite(scratchKnex, migrationTables)
+            : schemaDialect === "postgres"
+              ? await dumpPostgres(connection, scratch, migrationTables)
+              : await dumpMysql(schemaDialect, connection, scratch, migrationTables);
+      } finally {
+        await scratchKnex.destroy();
+      }
+    } finally {
+      await dropScratchDatabase(scratch);
+    }
+
+    writeSchemaDump(schemaFile, schemaDialect, migrations, body);
+    const pruned = options.prune ? await pruneMigrationFiles(tenantMigrations, migrations) : [];
+    return { file: schemaFile, migrations, pruned };
+  };
+
   return {
     getBase: () => baseClient,
     getTenant,
     createTenantDb,
     dropTenantDb,
+    dumpTenantSchema,
     destroyTenant,
     destroyAll,
   };

@@ -28,6 +28,7 @@ npx tenora list
 - `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants`
 - `tenora rollback:tenants`
+- `tenora schema:dump:tenants`
 - `tenora drop:tenant <id> --force`
 - `tenora make:migration <name>` (alias `make:migration:base`)
 - `tenora make:migration:tenants <name>`
@@ -43,6 +44,8 @@ npx tenora list
 - `--esm` / `--cjs`: template module format override for `make:migration*` and `make:seed*`.
 - `--force`: required by `drop:tenant`, which permanently deletes the tenant database, its user and its registry entry.
 - `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry, such as one left behind by a failed create.
+- `--prune`: let `schema:dump:tenants` delete the migration files the new dump contains.
+- `--check`: make `schema:dump:tenants` only check that the dump contains every migration file, without a database.
 
 ## Config lookup
 If `--config` is not set, CLI checks this order from current working directory:
@@ -66,6 +69,9 @@ tenora make:migration:tenants add_status_to_invoices
 # Run tenant seeds
 tenora seed:run:tenants
 
+# Dump the tenant schema, so new tenants load it instead of running every migration
+tenora schema:dump:tenants
+
 # Permanently delete a tenant
 tenora drop:tenant acme --force
 ```
@@ -76,6 +82,7 @@ tenora drop:tenant acme --force
 - `make:seed:*` and `seed:run*` require configured seed directories.
 - Template output defaults to nearest `package.json` module type unless overridden.
 - `drop:tenant` refuses tenants missing from the registry unless `--allow-unregistered` is set, and always refuses the base database and system databases.
+- `schema:dump:tenants` writes `schema/tenant-<dialect>.sql` next to the tenant migrations; `createTenantDb` then loads it and runs only newer migrations. It needs `pg_dump`, or `mysqldump`/`mariadb-dump`, at least as new as the server (override with `TENORA_PG_DUMP`, `TENORA_MYSQLDUMP`, `TENORA_MARIADB_DUMP`), and is not available for SQL Server. Run `migrate:tenants` everywhere before `--prune`. See the `@tenora/multi-tenant` README for details.
 - For global CLI installs, keep your DB driver in the target project (for example `pg`, `mysql2`, `mariadb`, `sqlite3`, or `tedious` for SQL Server).
 
 ## Relationship to other packages

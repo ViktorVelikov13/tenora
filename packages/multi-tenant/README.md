@@ -60,6 +60,7 @@ For new projects, prefer installing `@tenora/cli` (standalone package).
 Commands:
 - `tenora migrate` (alias `migrate:base`) / `tenora rollback` (alias `rollback:base`)
 - `tenora migrate:tenants` / `tenora rollback:tenants`
+- `tenora schema:dump:tenants [--prune] [--check]` (see [Schema dumps](#schema-dumps))
 - `tenora drop:tenant <id> --force`
 - `tenora make:migration <name>` (alias `make:migration:base`) / `tenora make:migration:tenants <name>`
 - `tenora make:seed <name>` (alias `make:seed:base`) / `tenora make:seed:tenants <name>`
@@ -70,6 +71,8 @@ Options:
 - `--create-base`: create the base database (from `base.database`) if it does not exist.
 - `--force`: required by `drop:tenant`, which permanently deletes the tenant.
 - `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry.
+- `--prune`: let `schema:dump:tenants` delete the migration files the new dump contains.
+- `--check`: make `schema:dump:tenants` only check that the dump is up to date, without a database.
 
 Notes:
 - `make:migration:*` requires the corresponding `migrationsDir`.
@@ -124,6 +127,8 @@ or import the config and pass it directly to `createTenoraFactory(...)`.
 Encryption defaults:
 - If `encryptPassword`/`decryptPassword` are not provided, Tenora will use `process.env.TENORA_KEY` (if set).
 - If no key is present, Tenora stores plaintext passwords in the registry.
+- `encryptPassword` uses AES-256-GCM from Node's built-in `crypto` and writes values starting with `tenora:v1:`.
+- `decryptPassword` also reads values written by Tenora 0.3 and earlier (they start with `U2FsdGVkX1`), so existing registry entries keep working without re-encrypting. Tenora 0.3 cannot read the new format, so downgrading after creating tenants needs those passwords re-encrypted.
 
 SQLite notes:
 - For SQLite, set `base.database` to a file path or provide `base.connection.filename`.
@@ -142,6 +147,71 @@ Defaults (customizable via `registry`):
 If you rename the table or columns in the generated migration, update `registry` in your config to match.
 If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypted_password`; otherwise it stores the plain password in `password`.
 
+### Schema dumps
+With many tenant migrations, creating a tenant gets slow, because `createTenantDb` runs every migration one by one.
+A schema dump stores the structure those migrations produce, so a new tenant database is built in one go:
+
+```bash
+tenora schema:dump:tenants
+```
+
+This creates a throwaway database, runs every tenant migration on it, and writes its structure to
+`schema/tenant-<dialect>.sql` next to your tenant migrations directory (for example `migrations/schema/tenant-postgres.sql`),
+then drops the throwaway database. The dump holds no data except Knex's record of which migrations it contains.
+Commit it alongside your migrations.
+
+When the dump exists, `createTenantDb` loads it into the new, empty database as the tenant's own user, then runs only the
+migrations newer than the dump, then the seeds. Existing tenants and `migrate:tenants` are unaffected. Without a dump file,
+nothing changes.
+
+- **Keep it current**: run `tenora schema:dump:tenants` again after adding migrations. It starts from the previous dump, so it
+  also works after pruning. In CI, `tenora schema:dump:tenants --check` fails when a migration file is missing from the dump;
+  it only reads files, so it needs no database.
+- **Prune**: `tenora schema:dump:tenants --prune` also deletes the migration files the dump now contains. Tenora keeps listing
+  them for Knex, so existing tenants keep migrating, but they can no longer be rolled back. **Run `migrate:tenants` everywhere
+  before pruning**: a tenant that never ran a pruned migration stops with an error until you restore that file from version
+  control and migrate it.
+- **Tools**: dumping uses `pg_dump` for Postgres and `mysqldump` or `mariadb-dump` for MySQL/MariaDB, which must be at least
+  as new as the server. Set `TENORA_PG_DUMP`, `TENORA_MYSQLDUMP` or `TENORA_MARIADB_DUMP` to use a specific binary. SQLite
+  needs no tool. Loading needs no tools at all, so application servers do not need them.
+- **SQL Server** has no schema dumps; its tenants keep running every migration.
+- **Configuration**: set `tenant.schemaFile` to put the dump elsewhere, or to `false` to never load one.
+
+There is no built-in scheduler, because the dump only changes when migrations change. To refresh it automatically, run it in CI
+and open a pull request when it changed, for example with GitHub Actions:
+
+```yaml
+on:
+  push:
+    branches: [main]
+jobs:
+  schema-dump:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 24 }
+      - run: npm ci
+      # The runner's own pg_dump is older than Postgres 18, so install a matching one.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-18
+      - run: npx tenora schema:dump:tenants # with a tenora.config.js pointing at the service above
+        env:
+          TENORA_PG_DUMP: /usr/lib/postgresql/18/bin/pg_dump
+      - uses: peter-evans/create-pull-request@v8
+        with: { title: "Update tenant schema dump", branch: tenant-schema-dump }
+```
+
+Programmatically, the same is `manager.dumpTenantSchema({ prune })` and `checkTenantSchemaDump(options)`.
+
 ## API surface
 - `createTenoraFactory(options)` (alias `createKnexFactory`) → `{ getBase, getTenant, createTenantDb, dropTenantDb, destroyTenant, destroyAll }`
 - `createTenoraFactoryAsync(options)` → same, but can load `.mjs`/`.ts` config files via default lookup
@@ -152,6 +222,8 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
   - Rejects tenants missing from the registry, so a mistyped ID cannot delete an unrelated database; pass `allowUnregistered: true` to clear a half-created tenant
   - Always refuses the base database and system databases
   - Do not call it with a tenant ID taken directly from a request
+- `dumpTenantSchema({ prune? })` writes the tenant schema dump and returns `{ file, migrations, pruned }` (see [Schema dumps](#schema-dumps))
+- `checkTenantSchemaDump(options)` returns `{ file, exists, missing }` without connecting to a database
 - `destroyTenant(tenantId)` only closes the cached connection pool; the database itself is untouched
 - `createTenantResolver({ manager, tenantId, passwordProvider?, authorizer?, attach? })`
   - Returns async `(req) => { tenantId?, knex? }`
@@ -176,6 +248,7 @@ If `encryptPassword` is provided, Tenora stores the encrypted value in `encrypte
 ## Troubleshooting
 - **“database already exists”**: a previous `createTenantDb` may have failed partway, leaving a tenant that is not in the registry. Remove it with `tenora drop:tenant <id> --force --allow-unregistered`, or pick a new ID.
 - **“password authentication failed”**: ensure `passwordProvider` returns the plain password for that tenant.
+- **“could not decrypt the tenant password”**: the cipher key (`TENORA_KEY` or your own) is not the one the password was encrypted with.
 - **Migrations not running**: verify `tenant.migrationsDir` is correct and reachable from where you invoke the CLI.
 - **Pooling issues**: adjust `tenant.pool` or `base.pool` in the factory options.
 
