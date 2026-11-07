@@ -3,7 +3,9 @@ import path from "path";
 import type { CliConfig } from "../types";
 import { resolveKnex } from "../runtime/resolveKnex";
 
-const resolveClient = (value?: string): string => value ?? "pg";
+// "sqlserver" is a Tenora alias; Knex only knows this dialect as "mssql".
+const resolveClient = (value?: string): string =>
+  value === "sqlserver" ? "mssql" : value ?? "pg";
 
 const isPostgresClient = (client: string): boolean =>
   client === "pg" || client === "postgres" || client === "postgresql";
@@ -168,7 +170,7 @@ export const ensureBaseDatabase = async (cfg: CliConfig) => {
       await admin.raw(`CREATE DATABASE \`${safeName}\``);
     } else if (isMssqlClient(client)) {
       const result = await admin.raw(`SELECT name FROM sys.databases WHERE name = ?`, [baseDb]);
-      if (result?.[0]?.length) return;
+      if (result?.length) return;
 
       const safeName = escapeMssqlIdent(baseDb);
       await admin.raw(`CREATE DATABASE [${safeName}]`);
