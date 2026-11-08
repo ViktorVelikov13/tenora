@@ -415,7 +415,9 @@ export default migration({
   (it is needed for the upgrade, below).
 - `make:migration` generates the new format; the name inference (`create_users`, `add_email_to_users`, …) carries over.
 - SQLite alterations that SQLite cannot do in place (changing a column's type, most constraint changes) rebuild the table,
-  with foreign key checks switched off before the transaction starts, as SQLite's documented procedure requires.
+  with foreign key checks switched off before the transaction starts, as SQLite's documented procedure requires. So
+  each migration on SQLite runs with them off, and fails if it leaves new broken references when it ends. Nothing
+  cascades while it runs, which it reports the same way.
 
 ### Existing Knex migration and seed files
 
@@ -591,42 +593,54 @@ runner.
 
 ## Keeping 0.x maintained
 
-The 1.0 work lives on its own long-lived branch, **`next`**, so `development` and `main` keep shipping 0.x releases
-undisturbed while it is built.
+1.0 is a very large change, so it is released as a **canary** beside 0.x for as long as it needs, not in place of it.
+Anyone can install it on purpose, and nobody gets it by accident: 0.x stays what `npm install` gives, and keeps getting
+releases.
 
-1. `development` stays the 0.x line for now: its next releases (0.4.0, with the crypto change and schema dumps, and
-   whatever else goes live) are made from it as today. Merge PR #12 (trusted publishing) before the next release.
-2. `next` holds the 1.0 work, branched from the plan. It already requires Node `>=24.15.0` and tests on Node 24 and 26;
-   `development` keeps Node 22.12. `development` is merged into `next` regularly, so 0.x changes reach 1.0 as they land.
-3. When 1.0 is ready for prereleases, cut **`release/0.x`** from `main` at the last 0.x release. On that branch, set
-   Changesets' `baseBranch` to `release/0.x` and add the branch to the release workflow, publishing with
-   `changeset publish --tag v0`. Without the tag, a 0.x patch published after 1.0 would become `latest`.
-4. Then merge `next` into `development`, which becomes the 1.0 line. 1.0 prereleases use Changesets pre mode
-   (`changeset pre enter next`) and publish `1.0.0-next.N` under the `next` dist-tag.
-5. A 0.x minor adds what helps people prepare, made on `development` while it is still the 0.x line:
-   `schema:dump:base`, the registry check that survives pruning, and `tenora upgrade --check`.
-6. Support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development` no longer
+| | 0.x | 1.0 canary |
+| --- | --- | --- |
+| Branch | `development`, released through `main` | `next` |
+| npm dist-tag | `latest` | `canary` |
+| Versions | 0.4.1, 0.5.0, … | 1.0.0-canary.N |
+| Install | `npm install @tenora/multi-tenant` | `npm install @tenora/multi-tenant@canary` |
+
+1. `development` stays the 0.x line, and its releases are made from it as today. It keeps Node 22.12.
+2. `next` holds the 1.0 work. It requires Node `>=24.15.0` and tests on Node 24 and 26. It stays in Changesets pre mode
+   with the tag `canary`. A push with a new changeset opens or updates a "Version Packages (canary)" PR, and merging that
+   PR publishes, so the next canary needs a changeset describing it. The release script also passes `--tag canary`, so
+   nothing on `next` can move `latest`, even if pre mode is ever left by mistake.
+3. `development` is merged into `next` regularly, so 0.x changes reach 1.0 as they land. A 0.x release's version bumps
+   conflict in `package.json` and the changelogs: keep `next`'s versions, and take the changelog entries from both sides.
+   `baseBranch`, the release script and the workflow's branch list differ on purpose, so if they conflict, keep `next`'s.
+4. `@tenora/orm` has no 0.x version and nothing in 0.x depends on it, so its dist-tags affect no existing user. Check them
+   with `npm view @tenora/orm dist-tags` after the first publish, and install it as `@tenora/orm@canary` either way.
+5. Promoting 1.0.0 is a separate decision, taken once the canary has proved itself on real projects. Then cut
+   **`release/0.x`** from `main` at the last 0.x release; on that branch set Changesets' `baseBranch` to `release/0.x`, add
+   the branch to the release workflow, and publish with `changeset publish --tag v0`, because without the tag a 0.x patch
+   published after 1.0 would become `latest`. On `next`, run `changeset pre exit`, drop `--tag canary`, set `baseBranch`
+   back to `main`, and merge `next` into `development`, which becomes the 1.0 line.
+6. A 0.x minor adds what helps people prepare, made on `development`: `schema:dump:base`, the registry check that survives
+   pruning, and `tenora upgrade --check`.
+7. Support window: bug fixes on 0.x for 6 months after 1.0.0, security fixes for 12 months. Once `development` no longer
    has the Knex code, most 0.x fixes touch code that exists only on `release/0.x`, so fixes are made there, in PRs
-   against `release/0.x`, and carried forward to `development` by hand when the same problem exists in 1.0. The README
-   gets a "Which version" table; at end of life, `npm deprecate` marks the 0.x range with a pointer to the upgrade
-   guide.
-7. CI runs the full database suite on every branch that is pushed, `next` and `release/0.x` included.
+   against `release/0.x`, and carried forward to `development` by hand when the same problem exists in 1.0. At end of
+   life, `npm deprecate` marks the 0.x range with a pointer to the upgrade guide.
 
 ## Phases
 
-Each phase ends with something releasable as a prerelease and tested on all five databases with the existing harness
+Each phase ends with something releasable as a canary and tested on all five databases with the existing harness
 (`tests/run.mjs`, `npm run test:docker`), extended with an ORM suite.
 
 | Phase | Deliverable | Done when |
 | --- | --- | --- |
 | 0. Prepare 0.x | on `development`: 0.4.0 released, then a 0.x minor with `schema:dump:base`, the registry check that survives pruning, and `upgrade --check`; `release/0.x` cut when 1.0 prereleases start | users can baseline on 0.x |
 | 1. Engine (done on `next`) | `@tenora/orm`: driver adapters, pools, connections and transactions (savepoints, queueing, verified commits, after-commit, retries), the `compile()` module with snapshot tests, query builder and dialect rules, `sql` fragments | `db.table()` CRUD, joins, aggregates, upserts and every transaction rule pass on all five databases |
-| 2. Schema and migrator; core on the engine (schema builder, migrator, seeder and introspection done on `next`; core and CLI still on Knex) | blueprint schema builder with the SQLite rebuild, migrator on `tenora_migrations`, seeder, schema dumps; provisioning, registry and every CLI command ported; Knex removed from `core` and `cli` | the existing CLI and lifecycle tests pass with Knex not installed |
+| 2. Schema and migrator; core on the engine (done on `next`) | blueprint schema builder with the SQLite rebuild, migrator on `tenora_migrations`, seeder, schema dumps; provisioning, registry and every CLI command ported; Knex removed from `core` and `cli` | the existing CLI and lifecycle tests pass with Knex not installed |
 | 3. Models (model core done on `next`; relations, eager loading and pagination of relations still to do) | attributes, casts, fillable, timestamps, dirty tracking, CRUD, events and observers, scopes, soft deletes, serialization, strict mode; hasOne, hasMany, belongsTo, belongsToMany, hasManyThrough; eager loading, `withCount`, `whereHas`; pagination and chunking; type design measured and frozen | model test suite passes on all five databases |
 | 4. Tenancy | tenant context, connection resolver, `createTenora`, middleware, `tenant(id).run()`, idle pool eviction, cross-connection write warnings, `@tenora/multi-tenant/knex` bridge | a sample app with base and tenant models runs without passing connections around |
 | 5. Upgrade: databases | `tenora upgrade` preflight, bookkeeping, dumps, `--write-config`, `--drop-legacy-tables`; the legacy Knex file runner; schema introspection through the catalog on all five databases | a 0.4 fixture project with tenants on every database upgrades, and still works on 0.x afterwards |
 | 6. Upgrade: code | `@tenora/upgrade`: the Knex-compatible blueprint, migration and seed converter with the schema proof, Objection model and call-site converter, report, upgrade guide | the fixture project's migrations and seeds convert and prove equal on all five databases; its models convert and its tests pass |
-| 7. Release | `1.0.0-next.N` prereleases, docs, dogfooding on a real app, then 1.0.0 | — |
+| 7. Release | docs, dogfooding on real apps through the canary, then promoting 1.0.0 to `latest` | — |
 | Later (1.x) | polymorphic relations, model factories and test helpers (a rolled-back transaction per test), tenant-aware queued jobs, streaming `cursor()`, read replicas, query logging hooks, typed models generated from the schema | — |
 
 Phases 1 and 2 are most of the work. Phase 3 can start as soon as phase 1's builder is stable, in parallel with phase 2,
@@ -674,3 +688,8 @@ Settled on 2026-11-07:
    0.x ([Keeping 0.x maintained](#keeping-0x-maintained)).
 7. **0.x support**: bug fixes for 6 months and security fixes for 12 months after 1.0.0.
 8. **All packages release as 1.0.0.**
+
+Settled on 2026-11-08:
+
+9. **1.0 ships as a canary first**, `1.0.0-canary.N` under the `canary` dist-tag from `next`, while 0.x stays `latest` and
+   keeps getting releases ([Keeping 0.x maintained](#keeping-0x-maintained)).

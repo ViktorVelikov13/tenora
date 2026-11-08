@@ -6,10 +6,10 @@
   ],
   "scripts": {
     "build": "npm -w @tenora/orm run build && npm -w @tenora/core run build && npm -w @tenora/multi-tenant run build && npm -w @tenora/cli run build",
-    "pack": "npm -w @tenora/orm pack && npm -w @tenora/core pack && npm -w @tenora/multi-tenant pack && npm -w @tenora/cli pack",
+    "pack": "npm run build && npm -w @tenora/orm pack && npm -w @tenora/core pack && npm -w @tenora/multi-tenant pack && npm -w @tenora/cli pack",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "changeset publish",
+    "release": "npm run build && changeset publish --tag canary",
     "test": "npm run build && node tests/run.mjs",
     "test:docker": "npm run build && node tests/run.mjs --docker"
   },

@@ -9,10 +9,25 @@ This repository is the **Tenora monorepo**. It contains the runtime package, the
 - Allows cross-package refactors without breaking public APIs.
 - Makes release/versioning simpler with Changesets.
 
+## Which version?
+
+| | 0.x | 1.0 canary |
+| --- | --- | --- |
+| What it is | the stable line, on Knex and Objection | a rewrite on Tenora's own ORM, `@tenora/orm` |
+| Install | `npm install @tenora/multi-tenant` | `npm install @tenora/multi-tenant@canary` |
+| npm tag | `latest` | `canary` |
+| Branch | `development`, `main` | `next` |
+
+The canary is a very large change and may have serious problems, so nothing installs it unless you ask for it by name.
+Use it in projects you are willing to fix by hand. Relations, the tenant context and `tenora upgrade` are not in it yet,
+and a project with Knex migrations cannot move to it until `tenora upgrade` exists. See
+[the plan](docs/orm/plan.md).
+
 ## Packages
 - **`@tenora/multi-tenant`**: runtime toolkit for your app code (tenant resolver, factory, password helpers).
 - **`@tenora/cli`**: standalone `tenora` command for migrations/seeds and tenant-wide operations.
 - **`@tenora/core`**: shared internals used by the two public packages.
+- **`@tenora/orm`**: the query builder, models, schema builder and migrator behind the 1.0 canary.
 
 ## Which package should I install?
 - Building an application/service: install `@tenora/multi-tenant`.

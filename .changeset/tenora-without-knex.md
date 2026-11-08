@@ -16,3 +16,5 @@ Run on `@tenora/orm`. Knex and Objection are gone from every Tenora package:
 - the `sqlite3` driver is no longer supported; install `better-sqlite3`. The database files stay the same.
 - `knexOptions` still applies its `pool`, `migrations.directory` and `seeds.directory`, and warns about anything else.
 - `connection.charset` and `connection.collate` still reach every new MySQL and MariaDB table.
+- the registry migration a new project gets uses `timestamp` rather than `timestamptz` on Postgres; existing registries
+  are untouched.
