@@ -251,8 +251,8 @@ export class Connection {
   }
 
   /**
-   * @internal Runs a script of several statements, exactly as written, on one pooled connection and outside any
-   * transaction: a schema dump.
+   * Runs a script of several statements, exactly as written and with no parameters, on one pooled connection and
+   * outside any transaction. For trusted files such as a schema dump, never for anything built from input.
    */
   async script(text: string): Promise<void> {
     const client = await this.#pool.acquire();

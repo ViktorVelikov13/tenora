@@ -307,7 +307,6 @@ const DIALECT = { "better-sqlite3": "sqlite", postgres: "postgres", mysql: "mysq
 const ORM_CLIENT = { postgres: "pg", mysql: "mysql2", mariadb: "mariadb", mssql: "mssql" };
 
 const NOT_YET = {
-  sqlite3: "the sqlite3 driver is dropped in 1.0",
 };
 
 /** The ORM's config for a test server, in the shape 0.x configs use. */

@@ -19,7 +19,7 @@ describe("packed tarballs", () => {
 
   before(() => {
     packDir = fs.mkdtempSync(path.join(os.tmpdir(), "tenora-pack-"));
-    for (const name of ["core", "cli", "multi-tenant"]) {
+    for (const name of ["orm", "core", "cli", "multi-tenant"]) {
       const output = npm(["pack", "-w", `@tenora/${name}`, "--pack-destination", packDir], repoRoot);
       tarballs[name] = path.join(packDir, output.trim().split("\n").at(-1));
     }
@@ -39,10 +39,10 @@ describe("packed tarballs", () => {
           "install",
           "--no-audit",
           "--no-fund",
+          tarballs.orm,
           tarballs.core,
           tarballs[packageName],
-          "sqlite3",
-          ...(packageName === "cli" ? ["knex"] : []),
+          "better-sqlite3",
         ],
         project.dir
       );
@@ -50,7 +50,7 @@ describe("packed tarballs", () => {
         "tenora.config.js",
         `export default {
   base: {
-    client: "sqlite3",
+    client: "better-sqlite3",
     database: "data/base.sqlite",
     migrationsDir: "migrations/base",
   },
@@ -67,6 +67,8 @@ describe("packed tarballs", () => {
       assertOk(tenora(["migrate", "--create-base"]));
       assert.match(assertOk(tenora(["migrate"])).stdout, /create_tenant_registry/);
       assert.ok(fs.existsSync(project.path("data/base.sqlite")));
+      assert.equal(fs.existsSync(project.path("node_modules/knex")), false, "Knex must not be installed");
+      assert.equal(fs.existsSync(project.path("node_modules/objection")), false, "Objection must not be installed");
     });
   }
 
@@ -74,7 +76,7 @@ describe("packed tarballs", () => {
     const project = createProject();
     projects.push(project);
     npm(
-      ["install", "--no-audit", "--no-fund", tarballs.core, tarballs["multi-tenant"]],
+      ["install", "--no-audit", "--no-fund", tarballs.orm, tarballs.core, tarballs["multi-tenant"]],
       project.dir
     );
     project.write(

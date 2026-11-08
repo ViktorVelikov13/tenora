@@ -1,9 +1,8 @@
 import fs from "fs";
 import path from "path";
-import type { Knex } from "knex";
+import type { Connection } from "@tenora/orm";
 import type { MultiTenantOptions, TenantRecord, TenantRegistryOptions } from "./types";
 import { resolveTemplateModuleType } from "./cli/templates";
-import { isMssqlClient, resolveClient } from "./factory/shared";
 import { decryptPassword as defaultDecrypt, encryptPassword as defaultEncrypt } from "./password";
 
 const REGISTRY_MARKER = "tenora:registry";
@@ -91,16 +90,16 @@ export const ensureRegistryMigration = (
   const exportDown = moduleType === "esm" ? "export const down" : "exports.down";
 
   const migration = `// ${REGISTRY_MARKER}
-${exportUp} = (knex) =>
-  knex.schema.createTable("${registry.table}", (t) => {
+${exportUp} = ({ schema }) =>
+  schema.create("${registry.table}", (t) => {
     t.string("${registry.idColumn}").primary();
-    t.string("${registry.passwordColumn}");
-    t.string("${registry.encryptedPasswordColumn}");
-    t.timestamp("${registry.createdAtColumn}", { useTz: true }).defaultTo(knex.fn.now());
-    t.timestamp("${registry.updatedAtColumn}", { useTz: true }).defaultTo(knex.fn.now());
+    t.string("${registry.passwordColumn}").nullable();
+    t.string("${registry.encryptedPasswordColumn}").nullable();
+    t.timestamp("${registry.createdAtColumn}").nullable().useCurrent();
+    t.timestamp("${registry.updatedAtColumn}").nullable().useCurrent();
   });
 
-${exportDown} = (knex) => knex.schema.dropTableIfExists("${registry.table}");
+${exportDown} = ({ schema }) => schema.dropIfExists("${registry.table}");
 `;
 
   fs.writeFileSync(filePath, migration);
@@ -108,7 +107,7 @@ ${exportDown} = (knex) => knex.schema.dropTableIfExists("${registry.table}");
 };
 
 export const ensureRegistryTable = async (
-  base: Knex,
+  base: Connection,
   options: MultiTenantOptions
 ) => {
   const registry = resolveRegistry(options);
@@ -121,21 +120,24 @@ export const ensureRegistryTable = async (
 };
 
 export const listTenantsFromRegistry = async (
-  base: Knex,
+  base: Connection,
   options: MultiTenantOptions
 ): Promise<TenantRecord[]> => {
   const registry = resolveRegistry(options);
   await ensureRegistryTable(base, options);
-  const rows = await base(registry.table).select({
-    id: registry.idColumn,
-    password: registry.passwordColumn,
-    encryptedPassword: registry.encryptedPasswordColumn,
-  });
+  const rows = await base
+    .table(registry.table)
+    .select(
+      `${registry.idColumn} as id`,
+      `${registry.passwordColumn} as password`,
+      `${registry.encryptedPasswordColumn} as encryptedPassword`
+    )
+    .get();
   return rows as TenantRecord[];
 };
 
 export const upsertTenantInRegistry = async (
-  base: Knex,
+  base: Connection,
   options: MultiTenantOptions,
   tenantId: string,
   password?: string
@@ -156,29 +158,15 @@ export const upsertTenantInRegistry = async (
     record[registry.passwordColumn] = password;
   }
 
-  // Knex does not support onConflict() on SQL Server.
-  if (isMssqlClient(resolveClient(options.base.client))) {
-    const updated = await base(registry.table)
-      .where(registry.idColumn, tenantId)
-      .update(record);
-    if (!updated) {
-      await base(registry.table).insert(record);
-    }
-    return;
-  }
-
-  await base(registry.table)
-    .insert(record)
-    .onConflict(registry.idColumn)
-    .merge(record);
+  await base.table(registry.table).upsert(record, registry.idColumn);
 };
 
 export const removeTenantFromRegistry = async (
-  base: Knex,
+  base: Connection,
   options: MultiTenantOptions,
   tenantId: string
 ) => {
   const registry = resolveRegistry(options);
   await ensureRegistryTable(base, options);
-  await base(registry.table).where(registry.idColumn, tenantId).del();
+  await base.table(registry.table).where(registry.idColumn, tenantId).delete();
 };

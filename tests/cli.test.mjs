@@ -18,7 +18,7 @@ const newProject = (options) => {
 
 const sqliteConfig = {
   base: {
-    client: "sqlite3",
+    client: "better-sqlite3",
     database: "data/base.sqlite",
     migrationsDir: "migrations/base",
     seedsDir: "seeds/base",
@@ -79,20 +79,20 @@ describe("command surface", () => {
 
 describe("migration templates", () => {
   const cases = [
-    ["create_users", ['createTable("users"', 'dropTableIfExists("users")']],
-    ["create_users_table", ['createTable("users"', 'dropTableIfExists("users")']],
-    ["createInvoices", ['createTable("invoices"']],
-    ["create_user_profiles", ['createTable("user_profiles"']],
-    ["create_user_profiles_table", ['createTable("user_profiles"']],
-    ["add_email_to_users", ['alterTable("users"', 't.string("email")', 't.dropColumn("email")']],
-    ["add_email_to_users_table", ['alterTable("users"', 't.string("email")']],
-    ["add_create_date_to_users", ['alterTable("users"', 't.string("create_date")']],
+    ["create_users", ['schema.create("users"', 'schema.dropIfExists("users")']],
+    ["create_users_table", ['schema.create("users"', 'schema.dropIfExists("users")']],
+    ["createInvoices", ['schema.create("invoices"']],
+    ["create_user_profiles", ['schema.create("user_profiles"']],
+    ["create_user_profiles_table", ['schema.create("user_profiles"']],
+    ["add_email_to_users", ['schema.table("users"', 't.string("email").nullable()', 't.dropColumn("email")']],
+    ["add_email_to_users_table", ['schema.table("users"', 't.string("email")']],
+    ["add_create_date_to_users", ['schema.table("users"', 't.string("create_date")']],
     [
       "add_first_name_and_last_name_to_users",
       ['t.string("first_name")', 't.string("last_name")'],
     ],
-    ["remove_email_from_users", ['alterTable("users"', 't.dropColumn("email")', 't.string("email")']],
-    ["drop_email_from_users", ['alterTable("users"', 't.dropColumn("email")']],
+    ["remove_email_from_users", ['schema.table("users"', 't.dropColumn("email")', 't.string("email")']],
+    ["drop_email_from_users", ['schema.table("users"', 't.dropColumn("email")']],
     ["drop_users_table", ["// TODO"]],
     ["backfill_legacy_data", ["// TODO"]],
   ];
@@ -173,6 +173,47 @@ describe("configuration", () => {
     assert.equal(project.list("migrations/base").length, 2);
   });
 
+  it("reads the 0.x knexOptions: pool and directories still apply, and the rest is named as ignored", () => {
+    const project = newProject();
+    project.writeConfig({
+      base: { client: "better-sqlite3", database: "data/base.sqlite", migrationsDir: "migrations/unused" },
+      knexOptions: {
+        useNullAsDefault: true,
+        acquireConnectionTimeout: 1_000,
+        pool: { max: 1 },
+        migrations: { directory: "migrations/from-knex-options", tableName: "knex_migrations" },
+      },
+    });
+    project.write(
+      "migrations/from-knex-options/1_registry.js",
+      "// tenora:registry\nexport const up = () => {};\nexport const down = () => {};\n"
+    );
+    // ensureRegistryMigration reads base.migrationsDir, as it did in 0.x.
+    project.write("migrations/unused/0_marker.js", "// tenora:registry\n");
+
+    const result = assertOk(project.tenora(["migrate", "--create-base"]));
+    assert.match(result.stdout, /1_registry/);
+    assert.match(result.stderr, /knexOptions .*Ignoring acquireConnectionTimeout, migrations\.tableName\./);
+    assert.doesNotMatch(result.stderr, /useNullAsDefault/);
+  });
+
+  it("explains that the sqlite3 driver is gone", () => {
+    const project = newProject();
+    project.writeConfig({ base: { client: "sqlite3", database: "data/base.sqlite", migrationsDir: "migrations/base" } });
+    project.write("migrations/base/1_registry.js", "// tenora:registry\nexport const up = () => {};\n");
+    assert.match(assertFailed(project.tenora(["migrate"])).output, /sqlite3" driver is no longer supported.*better-sqlite3/);
+  });
+
+  it("refuses a schema dump written by 0.x and points at tenora upgrade", () => {
+    const project = sqliteProject();
+    project.write(
+      "migrations/schema/tenant-sqlite.sql",
+      "-- dialect: sqlite\n-- migration: 1_create_notes.js\n\nCREATE TABLE knex_migrations (id integer);\n"
+    );
+    project.write("migrations/tenants/1_create_notes.js", "export const up = () => {};\n");
+    assert.match(assertFailed(project.tenora(["schema:dump:tenants", "--check"])).output, /written by Tenora 0\.x.*tenora upgrade/);
+  });
+
   it("fails with a clear message when no config exists", () => {
     const project = newProject();
     assert.match(assertFailed(project.tenora(["migrate"])).output, /no config found/);
@@ -180,7 +221,7 @@ describe("configuration", () => {
 
   it("fails when a required directory is not configured", () => {
     const project = newProject();
-    project.writeConfig({ base: { client: "sqlite3", database: "data/base.sqlite" } });
+    project.writeConfig({ base: { client: "better-sqlite3", database: "data/base.sqlite" } });
 
     assert.match(
       assertFailed(project.tenora(["make:migration", "create_a"])).output,

@@ -14,15 +14,8 @@ export default defineConfig({
   deps: {
     neverBundle: [
       "@tenora/core",
-      "knex",
-      "objection",
+      "@tenora/orm",
       "commander",
-      "pg",
-      "mysql2",
-      "mariadb",
-      "sqlite3",
-      "better-sqlite3",
-      "mssql",
     ],
   },
 });

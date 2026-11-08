@@ -271,7 +271,6 @@ DDL.mariadb = DDL.mysql;
 
 const DIALECT = { "better-sqlite3": "sqlite", postgres: "postgres", mysql: "mysql", mariadb: "mariadb", mssql: "mssql" };
 const ORM_CLIENT = { postgres: "pg", mysql: "mysql2", mariadb: "mariadb", mssql: "mssql" };
-const NOT_YET = { sqlite3: "the sqlite3 driver is dropped in 1.0" };
 
 const serverConfig = (engine, database) => {
   const { host, port, user, password } = engine.server;
@@ -286,7 +285,7 @@ const serverConfig = (engine, database) => {
 
 describe("models against a real database", () => {
   for (const engine of loadEngines()) {
-    const skip = engine.skip || NOT_YET[engine.id] || false;
+    const skip = engine.skip || false;
     describe(engine.label, { skip }, () => {
       const isSqlite = engine.id === "better-sqlite3";
       const dialect = DIALECT[engine.id];

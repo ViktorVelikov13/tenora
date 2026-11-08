@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
+import { sql } from "../packages/orm/dist/index.js";
 import {
-  createKnexFactory,
   createTenantResolver,
   createTenoraFactory,
   createTenoraFactoryAsync,
@@ -140,8 +140,8 @@ describe("createTenantResolver", () => {
     const resolve = createTenantResolver({
       manager: fakeManager(),
       tenantId: () => "acme",
-      attach: (req, tenantId, knex) => {
-        req.tenant = { id: tenantId, db: knex };
+      attach: (req, tenantId, db) => {
+        req.tenant = { id: tenantId, db };
       },
     });
     const req = {};
@@ -154,7 +154,7 @@ describe("createTenantResolver", () => {
 
 describe("factory", () => {
   const project = createProject();
-  const config = { base: { client: "sqlite3", database: project.path("base.sqlite") } };
+  const config = { base: { client: "better-sqlite3", database: project.path("base.sqlite") } };
   project.writeConfig(config);
 
   after(() => {
@@ -165,13 +165,12 @@ describe("factory", () => {
   for (const [name, create] of [
     ["createTenoraFactory", () => createTenoraFactory()],
     ["createTenoraFactoryAsync", () => createTenoraFactoryAsync()],
-    ["createKnexFactory", () => createKnexFactory()],
   ]) {
     it(`${name}() loads the config named by TENORA_CONFIG`, async () => {
       process.env.TENORA_CONFIG = project.path("tenora.config.js");
       const manager = await create();
       try {
-        assert.deepEqual(await manager.getBase().raw("select 1 as one"), [{ one: 1 }]);
+        assert.deepEqual(await manager.getBase().raw(sql`select 1 as one`), [{ one: 1 }]);
       } finally {
         await manager.destroyAll();
       }
@@ -189,7 +188,7 @@ describe("factory", () => {
 
       const second = manager.getTenant("acme");
       assert.notEqual(second, first);
-      assert.deepEqual(await second.raw("select 1 as one"), [{ one: 1 }]);
+      assert.deepEqual(await second.raw(sql`select 1 as one`), [{ one: 1 }]);
     } finally {
       await manager.destroyAll();
     }

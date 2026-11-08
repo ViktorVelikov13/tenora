@@ -12,7 +12,6 @@ const REGISTRY = "tenora_tenants";
 const TENANT_PASSWORD = "Tenant_dump_pw1";
 
 const DIALECTS = {
-  sqlite3: "sqlite",
   "better-sqlite3": "sqlite",
   postgres: "postgres",
   mysql: "mysql",
@@ -36,10 +35,14 @@ const missingDumpTool = (dialect) => {
   return found ? undefined : `no ${candidates.join(" or ")} on this machine`;
 };
 
-const migrationFile = (up, down) => `export const up = ${up};\nexport const down = ${down};\n`;
+const ORM_URL = new URL("../packages/orm/dist/index.js", import.meta.url).href;
+
+// The project has no node_modules, so a file that needs the sql tag imports it by its path.
+const migrationFile = (up, down) =>
+  `import { sql } from ${JSON.stringify(ORM_URL)};\nexport const up = ${up};\nexport const down = ${down};\n`;
 
 const raw = (...statements) =>
-  `async (knex) => {\n${statements.map((sql) => `  await knex.raw(${JSON.stringify(sql)});`).join("\n")}\n}`;
+  `async ({ db }) => {\n${statements.map((text) => `  await db.raw(sql\`\${sql.raw(${JSON.stringify(text)})}\`);`).join("\n")}\n}`;
 
 // Function bodies and trigger blocks contain semicolons, which is what the dump loaders must survive.
 const TRIGGERS = {
@@ -61,32 +64,32 @@ const TRIGGERS = {
 };
 
 const MIGRATIONS = {
-  "20000101000000_create_notes.js": migrationFile(
-    `(knex) => knex.schema.createTable("notes", (t) => { t.increments("id").primary(); t.string("name"); })`,
-    `(knex) => knex.schema.dropTableIfExists("notes")`
+  "20000101000000_create_notes": migrationFile(
+    `({ schema }) => schema.create("notes", (t) => { t.increments("id"); t.string("name").nullable(); })`,
+    `({ schema }) => schema.dropIfExists("notes")`
   ),
   // Data a migration writes must not end up in the dump, so its absence proves the dump was used.
-  "20000101000001_record_migration_run.js": migrationFile(
-    `async (knex) => { await knex.schema.createTable("migration_runs", (t) => { t.string("marker"); }); await knex("migration_runs").insert({ marker: "inserted-by-migration" }); }`,
-    `(knex) => knex.schema.dropTableIfExists("migration_runs")`
+  "20000101000001_record_migration_run": migrationFile(
+    `async ({ db, schema }) => { await schema.create("migration_runs", (t) => { t.string("marker"); }); await db.table("migration_runs").insert({ marker: "inserted-by-migration" }); }`,
+    `({ schema }) => schema.dropIfExists("migration_runs")`
   ),
-  "20000101000002_add_details_to_notes.js": migrationFile(
-    `async (knex) => { await knex.schema.alterTable("notes", (t) => { t.integer("priority"); t.index(["name"], "notes_name_index"); }); await knex.raw("create view notes_view as select id, name from notes"); }`,
-    `async (knex) => { await knex.raw("drop view notes_view"); await knex.schema.alterTable("notes", (t) => { t.dropIndex(["name"], "notes_name_index"); t.dropColumn("priority"); }); }`
+  "20000101000002_add_details_to_notes": migrationFile(
+    `async ({ db, schema }) => { await schema.table("notes", (t) => { t.integer("priority").nullable(); t.index(["name"], "notes_name_index"); }); await db.raw(sql\`create view notes_view as select id, name from notes\`); }`,
+    `async ({ db, schema }) => { await db.raw(sql\`drop view notes_view\`); await schema.table("notes", (t) => { t.dropIndex("notes_name_index"); t.dropColumn("priority"); }); }`
   ),
 };
-const TRIGGER_MIGRATION = "20000101000003_uppercase_note_names.js";
-const ARCHIVED_MIGRATION = "20000102000000_add_archived_to_notes.js";
-const LABELS_MIGRATION = "20000103000000_create_labels.js";
+const TRIGGER_MIGRATION = "20000101000003_uppercase_note_names";
+const ARCHIVED_MIGRATION = "20000102000000_add_archived_to_notes";
+const LABELS_MIGRATION = "20000103000000_create_labels";
 
 const ARCHIVED_FILE = migrationFile(
-  `(knex) => knex.schema.alterTable("notes", (t) => { t.boolean("archived"); })`,
-  `(knex) => knex.schema.alterTable("notes", (t) => { t.dropColumn("archived"); })`
+  `({ schema }) => schema.table("notes", (t) => { t.boolean("archived").nullable(); })`,
+  `({ schema }) => schema.table("notes", (t) => { t.dropColumn("archived"); })`
 );
 // A table of its own: SQLite cannot rebuild notes for an ALTER while notes_view refers to it.
 const LABELS_FILE = migrationFile(
-  `(knex) => knex.schema.createTable("labels", (t) => { t.increments("id").primary(); t.string("label"); })`,
-  `(knex) => knex.schema.dropTableIfExists("labels")`
+  `({ schema }) => schema.create("labels", (t) => { t.increments("id"); t.string("label").nullable(); })`,
+  `({ schema }) => schema.dropIfExists("labels")`
 );
 
 describe("tenant schema dumps", () => {
@@ -157,15 +160,15 @@ describe("tenant schema dumps", () => {
       };
 
       const appliedMigrations = async (tenantId) =>
-        (await observe(tenantId)("knex_migrations").select("name").orderBy("id")).map((row) => row.name);
+        (await observe(tenantId)("tenora_migrations").select("name").orderBy("id")).map((row) => row.name);
 
-      const writeMigration = (name, content) => project.write(`migrations/tenants/${name}`, content);
+      const writeMigration = (name, content) => project.write(`migrations/tenants/${name}.js`, content);
 
       before(() => {
         for (const [name, content] of Object.entries(MIGRATIONS)) writeMigration(name, content);
         const trigger = TRIGGERS[dialect === "mariadb" ? "mysql" : dialect];
         writeMigration(TRIGGER_MIGRATION, migrationFile(trigger.up, trigger.down));
-        project.write("seeds/tenants/notes.js", `export const seed = async (knex) => { await knex("notes").insert({ name: "seeded" }); };\n`);
+        project.write("seeds/tenants/notes.js", `export const seed = async ({ db }) => { await db.table("notes").insert({ name: "seeded" }); };\n`);
         project.writeConfig(configWith(""));
         if (engine.server) admin = knex(engine.knexConfig(undefined));
         assertOk(cli(["migrate", "--create-base"]));
@@ -293,13 +296,13 @@ describe("tenant schema dumps", () => {
       it("rolling back into a pruned migration fails with a clear error", () => {
         assertOk(cli(["rollback:tenants"]));
         const result = assertFailed(cli(["rollback:tenants"]));
-        assert.match(result.output, /was pruned into the schema dump .* cannot be rolled back/);
+        assert.match(result.output, /pruned into a schema dump cannot be rolled back/);
         assertOk(cli(["migrate:tenants"]));
       });
 
       it("a tenant that never ran a pruned migration gets a clear error", async () => {
         await createTenant(tenants.lagging);
-        await observe(tenants.lagging)("knex_migrations").where({ name: ARCHIVED_MIGRATION }).delete();
+        await observe(tenants.lagging)("tenora_migrations").where({ name: ARCHIVED_MIGRATION }).delete();
 
         const result = assertFailed(cli(["migrate:tenants"]));
         assert.match(result.output, new RegExp(`never ran migration "${ARCHIVED_MIGRATION}".*Restore the file`));

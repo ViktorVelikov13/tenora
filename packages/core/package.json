@@ -30,10 +30,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@tenora/orm": "^0.4.0",
     "commander": "^15.0.0"
-  },
-  "peerDependencies": {
-    "knex": "^3.3.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

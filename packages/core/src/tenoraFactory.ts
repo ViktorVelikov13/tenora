@@ -17,6 +17,3 @@ export const createTenoraFactoryAsync = async (
   const resolved = options ?? await loadDefaultConfigAsync();
   return buildTenoraFactory(resolved);
 };
-
-// Backwards-compatible alias
-export const createKnexFactory = createTenoraFactory;

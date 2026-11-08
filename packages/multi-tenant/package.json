@@ -28,9 +28,8 @@
   "license": "MIT",
   "dependencies": {
     "@tenora/core": "^0.4.0",
-    "commander": "^15.0.0",
-    "knex": "^3.3.0",
-    "objection": "^4.4.3"
+    "@tenora/orm": "^0.4.0",
+    "commander": "^15.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

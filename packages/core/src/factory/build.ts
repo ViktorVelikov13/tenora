@@ -1,8 +1,8 @@
 import { randomBytes } from "crypto";
 import fs from "fs";
-import type { Knex } from "knex";
 import os from "os";
 import path from "path";
+import { type Connection, createMigrator, createSeeder, type PoolOptions, sql } from "@tenora/orm";
 import type {
   DropTenantOptions,
   MultiTenantOptions,
@@ -16,18 +16,25 @@ import {
   removeTenantFromRegistry,
   upsertTenantInRegistry,
 } from "../tenantRegistry";
-import { resolveKnex } from "../runtime/resolveKnex";
+import {
+  buildBaseConnection,
+  connect,
+  connectToDatabase,
+  resolveAdminDatabase,
+  resolveBaseDatabaseName,
+} from "./connection";
+import { readKnexOptions } from "./knexOptions";
 import {
   pruneMigrationFiles,
   readSchemaDump,
+  resolveMigrationsTable,
   resolveSchemaDialect,
   resolveSchemaFile,
-  resolveTenantMigrations,
-  withSchemaDumpMigrations,
+  resolveTenantMigrationDirectories,
   writeSchemaDump,
   type SchemaDump,
 } from "./schemaFile";
-import { dumpMysql, dumpPostgres, dumpSqlite, loadSchemaSql, type MigrationTables } from "./schemaSql";
+import { dumpMysql, dumpPostgres, dumpSqlite, loadSchemaSql } from "./schemaSql";
 import {
   escapeMssqlIdent,
   escapeMysqlIdent,
@@ -39,14 +46,8 @@ import {
   isSqliteClient,
   normalizePassword,
   resolveClient,
+  runText,
 } from "./shared";
-
-const defaultPool: Knex.PoolConfig = {
-  min: 2,
-  max: 10,
-  acquireTimeoutMillis: 60_000,
-  idleTimeoutMillis: 60_000,
-};
 
 const SYSTEM_DATABASES = [
   "postgres",
@@ -63,120 +64,30 @@ const SYSTEM_DATABASES = [
 ];
 
 export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager => {
-  const knex = resolveKnex();
-  const { base, tenant = {}, knexOptions = {} } = resolved;
-  const cache = new Map<string, Knex>();
+  const { base, tenant = {} } = resolved;
+  const knexOptions = readKnexOptions(resolved);
+  const cache = new Map<string, Connection>();
   const basePassword = normalizePassword(base.password);
   const client = resolveClient(base.client);
+  const basePool: PoolOptions | undefined = knexOptions.pool ?? base.pool;
+  const tenantPool: PoolOptions | undefined = knexOptions.pool ?? tenant.pool ?? base.pool;
 
-  const resolveBaseDatabaseName = (): string => {
-    if (base.connection) {
-      const conn = base.connection as unknown as Record<string, unknown>;
-      if (isSqliteClient(client)) {
-        const filename = (conn.filename as string | undefined) ?? base.database;
-        if (!filename) {
-          throw new Error("Tenora: base.database or base.connection.filename is required for SQLite.");
-        }
-        return filename;
-      }
-      const dbName = (conn.database as string | undefined) ?? base.database;
-      if (!dbName) {
-        throw new Error("Tenora: base.database is required.");
-      }
-      return dbName;
-    }
+  const baseClient = connect(base, buildBaseConnection(base, resolveBaseDatabaseName(base)), basePool);
 
-    if (!base.database) {
-      throw new Error("Tenora: base.database is required.");
-    }
-    return base.database;
-  };
-
-  const applyConnectionDefaults = (conn: Record<string, unknown>) => {
-    if (conn.user === undefined && base.user !== undefined) conn.user = base.user;
-    if (conn.port === undefined && base.port !== undefined) conn.port = base.port;
-    if (isMssqlClient(client)) {
-      if (conn.server === undefined && base.host !== undefined) conn.server = base.host;
-    } else if (conn.host === undefined && base.host !== undefined) {
-      conn.host = base.host;
-    }
-    if (conn.ssl === undefined && base.ssl !== undefined) conn.ssl = base.ssl;
-    const normalized = normalizePassword(conn.password ?? basePassword);
-    if (normalized !== undefined) {
-      conn.password = normalized;
-    } else {
-      delete conn.password;
-    }
-  };
-
-  const buildBaseConnection = (databaseOverride?: string): Knex.StaticConnectionConfig => {
-    if (base.connection) {
-      const conn = { ...(base.connection as unknown as Record<string, unknown>) };
-      applyConnectionDefaults(conn);
-      if (databaseOverride !== undefined) {
-        if (isSqliteClient(client)) {
-          conn.filename = databaseOverride;
-          delete conn.database;
-        } else {
-          conn.database = databaseOverride;
-        }
-      } else if (isSqliteClient(client)) {
-        if (conn.filename === undefined && base.database) conn.filename = base.database;
-      } else if (conn.database === undefined && base.database) {
-        conn.database = base.database;
-      }
-      return conn as Knex.StaticConnectionConfig;
-    }
-
-    if (isSqliteClient(client)) {
-      const filename = databaseOverride ?? base.database;
-      if (!filename) {
-        throw new Error("Tenora: base.database is required for SQLite.");
-      }
-      return { filename } as Knex.StaticConnectionConfig;
-    }
-
-    if (!base.host || !base.user || !base.database) {
-      throw new Error("Tenora: base connection is incomplete. Provide base.connection or host/user/database.");
-    }
-
-    const conn: Record<string, unknown> = {
-      ...(isMssqlClient(client) ? { server: base.host } : { host: base.host }),
-      port: base.port,
-      user: base.user,
-      database: databaseOverride ?? base.database,
-      ssl: base.ssl ?? false,
-    };
-    if (basePassword !== undefined) conn.password = basePassword;
-    return conn as Knex.StaticConnectionConfig;
-  };
-
-  const baseKnexConfig: Knex.Config = {
-    client,
-    useNullAsDefault: true,
-    connection: buildBaseConnection(resolveBaseDatabaseName()),
-    pool: base.pool ?? defaultPool,
-    migrations: base.migrationsDir ? { directory: base.migrationsDir } : undefined,
-    seeds: base.seedsDir ? { directory: base.seedsDir } : undefined,
-    ...knexOptions,
-  } as Knex.Config;
-
-  const baseClient = knex(baseKnexConfig);
-
-  const tenantMigrations = resolveTenantMigrations(resolved);
+  const migrationsTable = resolveMigrationsTable(resolved);
+  const tenantMigrations = resolveTenantMigrationDirectories(resolved);
+  const baseMigrations = knexOptions.migrationDirectories ?? (base.migrationsDir ? [base.migrationsDir] : []);
+  const baseSeeds = knexOptions.seedDirectories ?? (base.seedsDir ? [base.seedsDir] : []);
+  const tenantSeeds = knexOptions.seedDirectories ?? (tenant.seedsDir ? [tenant.seedsDir] : []);
   const schemaFile = resolveSchemaFile(resolved);
-  const schemaDialect = resolveSchemaDialect(client);
-  const migrationTables: MigrationTables = {
-    tableName: tenantMigrations?.tableName ?? "knex_migrations",
-    schemaName: tenantMigrations?.schemaName ?? undefined,
-  };
-  const currentSchemaDump = () => (schemaFile ? readSchemaDump(schemaFile) : undefined);
+  const schemaDialect = resolveSchemaDialect(base);
+  const currentSchemaDump = () => (schemaFile ? readSchemaDump(schemaFile, migrationsTable) : undefined);
 
   const resolveTenantDatabaseName = (tenantId: string): string =>
     tenant.databaseName ? tenant.databaseName(tenantId) : tenantId;
 
   const resolveSqliteTenantFilename = (tenantId: string): string => {
-    const baseDb = resolveBaseDatabaseName();
+    const baseDb = resolveBaseDatabaseName(base);
     const baseDir = tenant.databaseDir ?? path.dirname(baseDb ?? process.cwd());
     const name = tenant.databaseName
       ? tenant.databaseName(tenantId)
@@ -192,29 +103,19 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
   const resolveTenantUserName = (tenantId: string): string =>
     `${tenant.userPrefix ?? "user_"}${tenantId}`;
 
-  const resolveAdminDatabase = (): string =>
-    base.adminDatabase ??
-    (isPostgresClient(client)
-      ? "postgres"
-      : isMysqlClient(client)
-        ? "mysql"
-        : isMssqlClient(client)
-          ? "master"
-          : resolveBaseDatabaseName());
-
   const isProtectedDatabase = (database: string): boolean => {
     if (isSqliteClient(client)) {
-      return path.resolve(database) === path.resolve(resolveBaseDatabaseName());
+      return path.resolve(database) === path.resolve(resolveBaseDatabaseName(base));
     }
-    return [resolveBaseDatabaseName(), resolveAdminDatabase(), ...SYSTEM_DATABASES].some(
+    return [resolveBaseDatabaseName(base), resolveAdminDatabase(base), ...SYSTEM_DATABASES].some(
       (name) => name.toLowerCase() === database.toLowerCase()
     );
   };
 
-  const buildTenantConfig = (tenantId: string, password?: string): Knex.Config => {
+  const buildTenantConnection = (tenantId: string, password?: string): Record<string, unknown> => {
     const tenantPassword = normalizePassword(password ?? basePassword);
     const hasTenantPassword = password !== undefined && password !== null;
-    const connection = buildBaseConnection(resolveTenantDatabase(tenantId)) as Record<string, unknown>;
+    const connection = buildBaseConnection(base, resolveTenantDatabase(tenantId));
 
     if (!isSqliteClient(client) && hasTenantPassword) {
       connection.user = resolveTenantUserName(tenantId);
@@ -229,41 +130,35 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       connection.ssl = tenant.ssl;
     }
 
-    const config: Knex.Config = {
-      client,
-      useNullAsDefault: true,
-      connection,
-      pool: tenant.pool ?? base.pool ?? defaultPool,
-      migrations: tenant.migrationsDir ? { directory: tenant.migrationsDir } : undefined,
-      seeds: tenant.seedsDir ? { directory: tenant.seedsDir } : undefined,
-      ...knexOptions,
-    };
-    const dump = currentSchemaDump();
-    if (dump && config.migrations) {
-      config.migrations = withSchemaDumpMigrations(config.migrations, dump);
-    }
-    return config;
+    return connection;
   };
 
-  const migrationsTable = (db: Knex) =>
-    migrationTables.schemaName
-      ? db(migrationTables.tableName).withSchema(migrationTables.schemaName)
-      : db(migrationTables.tableName);
+  const needing = (directories: string[], setting: string, work: string) => {
+    if (!directories.length) throw new Error(`Tenora: ${setting} is required to ${work}.`);
+    return directories;
+  };
 
-  const hasMigrationsTable = (db: Knex) =>
-    (migrationTables.schemaName ? db.schema.withSchema(migrationTables.schemaName) : db.schema).hasTable(
-      migrationTables.tableName
-    );
+  const migratorFor = (db: Connection, directories: string[], setting: string) =>
+    createMigrator(db, { directories: needing(directories, setting, "run migrations"), table: migrationsTable });
 
-  // A connection of its own: Postgres dumps clear search_path for the rest of the session, and
-  // MySQL needs multipleStatements to load the dump in one round trip.
-  const loadSchemaDump = async (config: Knex.Config, dump: SchemaDump) => {
-    const connection = isMysqlClient(client)
-      ? { ...(config.connection as Record<string, unknown>), multipleStatements: true }
-      : config.connection;
-    const loader = knex({ ...config, connection, pool: { min: 0, max: 1 } } as Knex.Config);
+  /** A tenant's migrator knows which migrations the dump contains, so one that never ran them is told so. */
+  const tenantMigratorFor = (db: Connection) => {
+    const dump = currentSchemaDump();
+    return createMigrator(db, {
+      directories: needing(tenantMigrations, "tenant.migrationsDir", "run migrations"),
+      table: migrationsTable,
+      pruned: dump && { migrations: dump.migrations, into: dump.file },
+    });
+  };
+
+  const seederFor = (db: Connection, directories: string[], setting: string) =>
+    createSeeder(db, { directories: needing(directories, setting, "run seeds") });
+
+  // A connection of its own, because a Postgres dump clears search_path for the rest of the session.
+  const loadSchemaDump = async (connection: Record<string, unknown>, dump: SchemaDump) => {
+    const loader = connect(base, connection, { max: 1 });
     try {
-      await loadSchemaSql(loader, client, dump.sql);
+      await loadSchemaSql(loader, dump.sql);
     } catch (error) {
       throw new Error(`Tenora: loading the schema dump ${dump.file} failed: ${(error as Error).message}`);
     } finally {
@@ -271,11 +166,11 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
     }
   };
 
-  const getTenant = (tenantId: string, password?: string): Knex => {
+  const getTenant = (tenantId: string, password?: string): Connection => {
     const cached = cache.get(tenantId);
     if (cached) return cached;
 
-    const tenantClient = knex(buildTenantConfig(tenantId, password));
+    const tenantClient = connect(base, buildTenantConnection(tenantId, password), tenantPool);
     cache.set(tenantId, tenantClient);
     return tenantClient;
   };
@@ -283,13 +178,13 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
   const destroyTenant = async (tenantId: string) => {
     const tenantClient = cache.get(tenantId);
     if (tenantClient) {
-      await tenantClient.destroy();
       cache.delete(tenantId);
+      await tenantClient.destroy();
     }
   };
 
   const destroyAll = async () => {
-    await Promise.all([...cache.values()].map((k) => k.destroy()));
+    await Promise.all([...cache.values()].map((db) => db.destroy()));
     cache.clear();
     await baseClient.destroy();
   };
@@ -309,81 +204,69 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       }
     } else {
       const tenantDb = resolveTenantDatabaseName(tenantId);
-      const admin = knex({
-        ...baseKnexConfig,
-        connection: buildBaseConnection(resolveAdminDatabase()),
-      });
+      const admin = connectToDatabase(base, resolveAdminDatabase(base));
 
       try {
         if (isPostgresClient(client)) {
-          const result = await admin.raw(`SELECT 1 FROM pg_database WHERE datname = ?`, [tenantDb]);
-          if (result?.rows?.length) {
+          const existing = await admin.raw(sql`SELECT 1 FROM pg_database WHERE datname = ${tenantDb}`);
+          if (existing.length) {
             throw new Error(`Database "${tenantDb}" already exists`);
           }
 
           const safeDb = escapePgIdent(tenantDb);
-          await admin.raw(`CREATE DATABASE "${safeDb}"`);
+          await runText(admin, `CREATE DATABASE "${safeDb}"`);
 
           if (tenantPassword && hasTenantPassword) {
             const userName = resolveTenantUserName(tenantId);
             const safeUser = escapePgIdent(userName);
             const safePwd = escapeSqlString(tenantPassword);
-            await admin.raw(`CREATE USER "${safeUser}" WITH PASSWORD '${safePwd}'`);
-            await admin.raw(`GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
+            await runText(admin, `CREATE USER "${safeUser}" WITH PASSWORD '${safePwd}'`);
+            await runText(admin, `GRANT ALL PRIVILEGES ON DATABASE "${safeDb}" TO "${safeUser}"`);
 
             // Since Postgres 15 only the database owner can create objects in the public schema.
-            const tenantAdmin = knex({
-              ...baseKnexConfig,
-              connection: buildBaseConnection(tenantDb),
-            });
+            const tenantAdmin = connectToDatabase(base, tenantDb);
             try {
-              await tenantAdmin.raw(`GRANT ALL ON SCHEMA public TO "${safeUser}"`);
+              await runText(tenantAdmin, `GRANT ALL ON SCHEMA public TO "${safeUser}"`);
             } finally {
               await tenantAdmin.destroy();
             }
           }
         } else if (isMysqlClient(client)) {
-          const result = await admin.raw(
-            `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ?`,
-            [tenantDb]
-          );
-          if (result?.[0]?.length) {
+          const existing = await admin.raw(sql`SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ${tenantDb}`);
+          if (existing.length) {
             throw new Error(`Database "${tenantDb}" already exists`);
           }
 
           const safeDb = escapeMysqlIdent(tenantDb);
-          await admin.raw(`CREATE DATABASE \`${safeDb}\``);
+          await runText(admin, `CREATE DATABASE \`${safeDb}\``);
 
           if (tenantPassword && hasTenantPassword) {
             const userName = resolveTenantUserName(tenantId);
             const safeUser = escapeSqlString(userName);
             const safePwd = escapeSqlString(tenantPassword);
-            await admin.raw(`CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY '${safePwd}'`);
-            await admin.raw(`GRANT ALL PRIVILEGES ON \`${safeDb}\`.* TO '${safeUser}'@'%'`);
+            await runText(admin, `CREATE USER IF NOT EXISTS '${safeUser}'@'%' IDENTIFIED BY '${safePwd}'`);
+            await runText(admin, `GRANT ALL PRIVILEGES ON \`${safeDb}\`.* TO '${safeUser}'@'%'`);
           }
         } else if (isMssqlClient(client)) {
           const safeDb = escapeMssqlIdent(tenantDb);
-          await admin.raw(
-            `IF DB_ID(N'${escapeSqlString(tenantDb)}') IS NULL CREATE DATABASE [${safeDb}]`
-          );
+          await runText(admin, `IF DB_ID(N'${escapeSqlString(tenantDb)}') IS NULL CREATE DATABASE [${safeDb}]`);
 
           if (tenantPassword && hasTenantPassword) {
             const userName = resolveTenantUserName(tenantId);
             const safeUser = escapeMssqlIdent(userName);
             const safePwd = escapeSqlString(tenantPassword);
-            await admin.raw(
+            await runText(
+              admin,
               `IF NOT EXISTS (SELECT name FROM sys.server_principals WHERE name = N'${escapeSqlString(userName)}') CREATE LOGIN [${safeUser}] WITH PASSWORD = '${safePwd}'`
             );
 
-            const tenantAdmin = knex({
-              ...baseKnexConfig,
-              connection: buildBaseConnection(tenantDb),
-            });
+            const tenantAdmin = connectToDatabase(base, tenantDb);
             try {
-              await tenantAdmin.raw(
+              await runText(
+                tenantAdmin,
                 `IF NOT EXISTS (SELECT name FROM sys.database_principals WHERE name = N'${escapeSqlString(userName)}') CREATE USER [${safeUser}] FOR LOGIN [${safeUser}]`
               );
-              await tenantAdmin.raw(`EXEC sp_addrolemember 'db_owner', '${safeUser}'`);
+              await runText(tenantAdmin, `EXEC sp_addrolemember 'db_owner', '${safeUser}'`);
             } finally {
               await tenantAdmin.destroy();
             }
@@ -398,23 +281,22 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       }
     }
 
-    const tenantConfig = buildTenantConfig(tenantId, tenantPassword);
-    const tenantKnex = knex(tenantConfig);
+    const connection = buildTenantConnection(tenantId, tenantPassword);
+    const tenantClient = connect(base, connection, tenantPool);
     try {
       // Only into a database with no migrations yet; a reused SQLite file may already have them.
       const dump = currentSchemaDump();
-      if (dump && !(await hasMigrationsTable(tenantKnex))) {
-        await loadSchemaDump(tenantConfig, dump);
+      if (dump && !(await tenantClient.schema.hasTable(migrationsTable))) {
+        await loadSchemaDump(connection, dump);
       }
-      if (tenant.migrationsDir) {
-        await tenantKnex.migrate.latest();
+      if (tenantMigrations.length) {
+        await tenantMigratorFor(tenantClient).latest();
       }
-      if (tenant.seedsDir) {
-        await tenantKnex.seed.run();
+      if (tenantSeeds.length) {
+        await seederFor(tenantClient, tenantSeeds, "tenant.seedsDir").run();
       }
     } finally {
-      await tenantKnex.destroy();
-      cache.delete(tenantId);
+      await tenantClient.destroy();
     }
 
     await upsertTenantInRegistry(baseClient, resolved, tenantId, password);
@@ -443,24 +325,23 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       }
     } else {
       const userName = resolveTenantUserName(tenantId);
-      const admin = knex({
-        ...baseKnexConfig,
-        connection: buildBaseConnection(resolveAdminDatabase()),
-      });
+      const admin = connectToDatabase(base, resolveAdminDatabase(base));
 
       try {
         if (isPostgresClient(client)) {
-          await admin.raw(`DROP DATABASE IF EXISTS "${escapePgIdent(tenantDb)}" WITH (FORCE)`);
-          await admin.raw(`DROP ROLE IF EXISTS "${escapePgIdent(userName)}"`);
+          await runText(admin, `DROP DATABASE IF EXISTS "${escapePgIdent(tenantDb)}" WITH (FORCE)`);
+          await runText(admin, `DROP ROLE IF EXISTS "${escapePgIdent(userName)}"`);
         } else if (isMysqlClient(client)) {
-          await admin.raw(`DROP DATABASE IF EXISTS \`${escapeMysqlIdent(tenantDb)}\``);
-          await admin.raw(`DROP USER IF EXISTS '${escapeSqlString(userName)}'@'%'`);
+          await runText(admin, `DROP DATABASE IF EXISTS \`${escapeMysqlIdent(tenantDb)}\``);
+          await runText(admin, `DROP USER IF EXISTS '${escapeSqlString(userName)}'@'%'`);
         } else if (isMssqlClient(client)) {
           const safeDb = escapeMssqlIdent(tenantDb);
-          await admin.raw(
+          await runText(
+            admin,
             `IF DB_ID(N'${escapeSqlString(tenantDb)}') IS NOT NULL BEGIN ALTER DATABASE [${safeDb}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [${safeDb}]; END`
           );
-          await admin.raw(
+          await runText(
+            admin,
             `IF SUSER_ID(N'${escapeSqlString(userName)}') IS NOT NULL DROP LOGIN [${escapeMssqlIdent(userName)}]`
           );
         } else {
@@ -479,12 +360,12 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
 
   const createScratchDatabase = async (database: string) => {
     if (isSqliteClient(client)) return;
-    const admin = knex({ ...baseKnexConfig, connection: buildBaseConnection(resolveAdminDatabase()) });
+    const admin = connectToDatabase(base, resolveAdminDatabase(base));
     try {
       if (isPostgresClient(client)) {
-        await admin.raw(`CREATE DATABASE "${escapePgIdent(database)}"`);
+        await runText(admin, `CREATE DATABASE "${escapePgIdent(database)}"`);
       } else {
-        await admin.raw(`CREATE DATABASE \`${escapeMysqlIdent(database)}\``);
+        await runText(admin, `CREATE DATABASE \`${escapeMysqlIdent(database)}\``);
       }
     } finally {
       await admin.destroy();
@@ -498,12 +379,12 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
       }
       return;
     }
-    const admin = knex({ ...baseKnexConfig, connection: buildBaseConnection(resolveAdminDatabase()) });
+    const admin = connectToDatabase(base, resolveAdminDatabase(base));
     try {
       if (isPostgresClient(client)) {
-        await admin.raw(`DROP DATABASE IF EXISTS "${escapePgIdent(database)}" WITH (FORCE)`);
+        await runText(admin, `DROP DATABASE IF EXISTS "${escapePgIdent(database)}" WITH (FORCE)`);
       } else {
-        await admin.raw(`DROP DATABASE IF EXISTS \`${escapeMysqlIdent(database)}\``);
+        await runText(admin, `DROP DATABASE IF EXISTS \`${escapeMysqlIdent(database)}\``);
       }
     } finally {
       await admin.destroy();
@@ -515,7 +396,7 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
    * what the migrations produce. A previous dump is loaded first, because pruned migrations cannot run.
    */
   const dumpTenantSchema = async (options: SchemaDumpOptions = {}): Promise<SchemaDumpResult> => {
-    if (!schemaDialect || !schemaFile || !tenantMigrations?.directory) {
+    if (!schemaDialect || !schemaFile || !tenantMigrations.length) {
       throw new Error(
         `Tenora: schema dumps need tenant.migrationsDir, a client other than SQL Server, and tenant.schemaFile not set to false (client is "${client}").`
       );
@@ -525,38 +406,31 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
     const scratch = isSqliteClient(client)
       ? path.join(os.tmpdir(), `tenora_schema_${suffix}.sqlite`)
       : `tenora_schema_${suffix}`;
-    const scratchConfig: Knex.Config = {
-      ...baseKnexConfig,
-      connection: buildBaseConnection(scratch),
-      pool: { min: 0, max: 1 },
-      migrations: previous ? withSchemaDumpMigrations(tenantMigrations, previous) : tenantMigrations,
-    };
+    const connection = buildBaseConnection(base, scratch);
 
     let migrations: string[] = [];
     let body = "";
     await createScratchDatabase(scratch);
     try {
-      if (previous) await loadSchemaDump(scratchConfig, previous);
-      const scratchKnex = knex(scratchConfig);
+      if (previous) await loadSchemaDump(connection, previous);
+      const scratchClient = connect(base, connection, { max: 1 });
       try {
-        await scratchKnex.migrate.latest();
-        const rows: { name: string }[] = await migrationsTable(scratchKnex).select("name").orderBy("id");
-        migrations = rows.map((row) => row.name);
-        const connection = scratchConfig.connection as Record<string, unknown>;
+        await migratorFor(scratchClient, tenantMigrations, "tenant.migrationsDir").latest();
+        migrations = await scratchClient.table<{ name: string }>(migrationsTable).orderBy("id").pluck("name");
         body =
           schemaDialect === "sqlite"
-            ? await dumpSqlite(scratchKnex, migrationTables)
+            ? await dumpSqlite(scratchClient, migrationsTable)
             : schemaDialect === "postgres"
-              ? await dumpPostgres(connection, scratch, migrationTables)
-              : await dumpMysql(schemaDialect, connection, scratch, migrationTables);
+              ? await dumpPostgres(connection, scratch, migrationsTable)
+              : await dumpMysql(schemaDialect, connection, scratch, migrationsTable);
       } finally {
-        await scratchKnex.destroy();
+        await scratchClient.destroy();
       }
     } finally {
       await dropScratchDatabase(scratch);
     }
 
-    writeSchemaDump(schemaFile, schemaDialect, migrations, body);
+    writeSchemaDump(schemaFile, schemaDialect, migrationsTable, migrations, body);
     const pruned = options.prune ? await pruneMigrationFiles(tenantMigrations, migrations) : [];
     return { file: schemaFile, migrations, pruned };
   };
@@ -564,6 +438,10 @@ export const buildTenoraFactory = (resolved: MultiTenantOptions): TenantManager 
   return {
     getBase: () => baseClient,
     getTenant,
+    baseMigrator: () => migratorFor(baseClient, baseMigrations, "base.migrationsDir"),
+    tenantMigrator: (tenantId, password) => tenantMigratorFor(getTenant(tenantId, password)),
+    baseSeeder: () => seederFor(baseClient, baseSeeds, "base.seedsDir"),
+    tenantSeeder: (tenantId, password) => seederFor(getTenant(tenantId, password), tenantSeeds, "tenant.seedsDir"),
     createTenantDb,
     dropTenantDb,
     dumpTenantSchema,

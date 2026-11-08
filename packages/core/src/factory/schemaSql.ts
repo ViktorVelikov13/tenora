@@ -1,23 +1,10 @@
 import { execFile } from "child_process";
-import type { Knex } from "knex";
+import { type Connection, sql } from "@tenora/orm";
 import { promisify } from "util";
-import type { TenoraClient } from "../types";
-import { isMysqlClient, isPostgresClient, isSqliteClient } from "./shared";
 
 const execFileAsync = promisify(execFile);
 
-/** Where Knex records which migrations ran; dumps keep these rows and no other data. */
-export type MigrationTables = { tableName: string; schemaName?: string };
-
-type Connection = Record<string, unknown>;
-type DriverConnection = {
-  query: (sql: string, callback?: (error: Error | null) => void) => Promise<unknown> | void;
-  exec: (sql: string, callback?: (error: Error | null) => void) => void;
-};
-type KnexClient = {
-  acquireConnection: () => Promise<DriverConnection>;
-  releaseConnection: (connection: DriverConnection) => Promise<void>;
-};
+type ConnectionSettings = Record<string, unknown>;
 
 const runTool = async (command: string, args: string[], env: NodeJS.ProcessEnv, override: string) => {
   try {
@@ -45,10 +32,14 @@ const cleanPostgresDump = (sql: string) =>
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+/**
+ * `table` is where the migrator records which migrations ran; dumps keep the rows of that table and its lock table, and
+ * no other data.
+ */
 export const dumpPostgres = async (
-  connection: Connection,
+  connection: ConnectionSettings,
   database: string,
-  tables: MigrationTables
+  table: string
 ): Promise<string> => {
   const command = process.env.TENORA_PG_DUMP || "pg_dump";
   const env: NodeJS.ProcessEnv = {};
@@ -67,7 +58,6 @@ export const dumpPostgres = async (
   if (connection.ssl) env.PGSSLMODE = "require";
 
   const common = [...target, "--no-owner", "--no-privileges"];
-  const qualify = (name: string) => `${tables.schemaName ? `"${tables.schemaName}".` : ""}"${name}"`;
   const structure = await runTool(command, [...common, "--schema-only"], env, "TENORA_PG_DUMP");
   const rows = await runTool(
     command,
@@ -75,8 +65,8 @@ export const dumpPostgres = async (
       ...common,
       "--data-only",
       "--inserts",
-      `--table=${qualify(tables.tableName)}`,
-      `--table=${qualify(`${tables.tableName}_lock`)}`,
+      `--table="${table}"`,
+      `--table="${table}_lock"`,
     ],
     env,
     "TENORA_PG_DUMP"
@@ -116,9 +106,9 @@ const findMysqlDump = async (dialect: "mysql" | "mariadb") => {
 
 export const dumpMysql = async (
   dialect: "mysql" | "mariadb",
-  connection: Connection,
+  connection: ConnectionSettings,
   database: string,
-  tables: MigrationTables
+  table: string
 ): Promise<string> => {
   const { command, override, version } = await findMysqlDump(dialect);
   const env: NodeJS.ProcessEnv = {};
@@ -147,7 +137,7 @@ export const dumpMysql = async (
   );
   const rows = await runTool(
     command,
-    [...common, "--no-create-info", "--skip-triggers", database, tables.tableName, `${tables.tableName}_lock`],
+    [...common, "--no-create-info", "--skip-triggers", database, table, `${table}_lock`],
     env,
     override
   );
@@ -163,88 +153,31 @@ const sqlLiteral = (value: unknown): string => {
   return `'${String(value).replace(/'/g, "''")}'`;
 };
 
-export const dumpSqlite = async (db: Knex, tables: MigrationTables): Promise<string> => {
+export const dumpSqlite = async (db: Connection, table: string): Promise<string> => {
   // Tables first, so views, indexes and triggers always find what they refer to.
-  const objects: { sql: string }[] = await db
-    .select("sql")
-    .from("sqlite_master")
-    .whereNotNull("sql")
-    .andWhereNot("name", "like", "sqlite_%")
-    .orderByRaw(
-      "CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END, rowid"
-    );
-  const statements = objects.map(({ sql }) => `${sql};`);
-  for (const table of [tables.tableName, `${tables.tableName}_lock`]) {
-    const rows: Record<string, unknown>[] = await db(table).select("*").orderByRaw("rowid");
+  const objects = await db.raw<{ sql: string }>(
+    sql`select sql from sqlite_master where sql is not null and name not like 'sqlite_%' order by case type when 'table' then 0 when 'view' then 1 when 'index' then 2 else 3 end, rowid`
+  );
+  const statements = objects.map((object) => `${object.sql};`);
+  for (const name of [table, `${table}_lock`]) {
+    const rows = await db.raw(sql`select * from ${sql.ref(name)} order by rowid`);
     for (const row of rows) {
       const columns = Object.keys(row).map((column) => `"${column.replace(/"/g, '""')}"`);
       const values = Object.values(row).map(sqlLiteral);
-      statements.push(`INSERT INTO "${table}" (${columns.join(", ")}) VALUES (${values.join(", ")});`);
+      statements.push(`INSERT INTO "${name}" (${columns.join(", ")}) VALUES (${values.join(", ")});`);
     }
   }
   return statements.join("\n\n");
 };
 
-/**
- * Splits a mysqldump script into statements. Drivers run one statement at a time, and DELIMITER
- * is a mysql client command rather than SQL, so it is handled here.
- */
-export const splitMysqlStatements = (sql: string): string[] => {
-  const statements: string[] = [];
-  let delimiter = ";";
-  let buffer: string[] = [];
-  const flush = () => {
-    const statement = buffer.join("\n").trim();
-    buffer = [];
-    const onlyComments = statement
-      .split("\n")
-      .every((line) => !line.trim() || line.trim().startsWith("--"));
-    if (!onlyComments) statements.push(statement);
-  };
-  for (const line of sql.split("\n")) {
-    const change = /^DELIMITER\s+(\S+)$/i.exec(line.trim());
-    if (change) {
-      flush();
-      delimiter = change[1];
-      continue;
-    }
-    const trimmed = line.trimEnd();
-    if (trimmed.endsWith(delimiter)) {
-      buffer.push(trimmed.slice(0, -delimiter.length));
-      flush();
-    } else {
-      buffer.push(line);
-    }
-  }
-  flush();
-  return statements;
-};
-
-/** Runs a dump through the driver's own connection, which accepts whole scripts where Knex does not. */
-export const loadSchemaSql = async (db: Knex, client: TenoraClient, sql: string) => {
-  const knexClient = (db as unknown as { client: KnexClient }).client;
-  const connection = await knexClient.acquireConnection();
-  const callback = (run: (done: (error: Error | null) => void) => void) =>
-    new Promise<void>((resolve, reject) => run((error) => (error ? reject(error) : resolve())));
-  try {
-    if (isPostgresClient(client)) {
-      await connection.query(sql.split("\n").filter((line) => !line.startsWith("\\")).join("\n"));
-    } else if (isMysqlClient(client)) {
-      // One round trip; the caller opens this connection with multipleStatements.
-      const script = splitMysqlStatements(sql).join(";\n");
-      await callback((done) => connection.query(script, done));
-    } else if (isSqliteClient(client)) {
-      // One transaction, as Knex uses for a migration batch; otherwise SQLite syncs after every statement.
-      const script = `BEGIN;\n${sql}\nCOMMIT;`;
-      if (client === "better-sqlite3") {
-        connection.exec(script);
-      } else {
-        await callback((done) => connection.exec(script, done));
-      }
-    } else {
-      throw new Error(`Tenora: schema dumps are not supported for the "${client}" client.`);
-    }
-  } finally {
-    await knexClient.releaseConnection(connection);
+/** Loads a dump on a connection of its own, since Postgres dumps clear search_path for the rest of the session. */
+export const loadSchemaSql = async (db: Connection, script: string) => {
+  if (db.dialect === "postgres") {
+    await db.script(script.split("\n").filter((line) => !line.startsWith("\\")).join("\n"));
+  } else if (db.dialect === "sqlite") {
+    // One transaction, as a migration has; otherwise SQLite syncs after every statement.
+    await db.script(`BEGIN;\n${script}\nCOMMIT;`);
+  } else {
+    await db.script(script);
   }
 };

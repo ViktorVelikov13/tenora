@@ -1,12 +1,12 @@
 import type { Command } from "commander";
 import { checkTenantSchemaDump } from "../factory/schemaFile";
-import { createTenoraFactory } from "../knexFactory";
-import type { CliConfig } from "../types";
+import { createTenoraFactory } from "../tenoraFactory";
 import { listTenantsFromRegistry } from "../tenantRegistry";
 import { ensureRegistryMigrationIfNeeded, getTenantPassword, loadCliConfig } from "./config";
-import { ensureBaseDatabase, makeKnexForDirs } from "./database";
+import { ensureBaseDatabase } from "./database";
 import {
-  normalizeCreatedPath,
+  newMigrationPath,
+  newSeedPath,
   resolveTemplateModuleType,
   writeMigrationTemplate,
   writeSeedTemplate,
@@ -25,15 +25,9 @@ const runMakeMigration = async (
     );
   }
   const moduleType = resolveTemplateModuleType(opts);
-  const client = makeKnexForDirs(cfg, dir);
-  try {
-    const created = await client.migrate.make(name);
-    const file = normalizeCreatedPath(created);
-    writeMigrationTemplate(file, moduleType, name);
-    console.log(file);
-  } finally {
-    await client.destroy();
-  }
+  const file = newMigrationPath(dir, name);
+  writeMigrationTemplate(file, moduleType, name);
+  console.log(file);
 };
 
 const runMakeSeed = async (
@@ -49,15 +43,9 @@ const runMakeSeed = async (
     );
   }
   const moduleType = resolveTemplateModuleType(opts);
-  const client = makeKnexForDirs(cfg, undefined, dir);
-  try {
-    const created = await client.seed.make(name);
-    const file = normalizeCreatedPath(created);
-    writeSeedTemplate(file, moduleType);
-    console.log(file);
-  } finally {
-    await client.destroy();
-  }
+  const file = newSeedPath(dir, name);
+  writeSeedTemplate(file, moduleType);
+  console.log(file);
 };
 
 const addBaseCommands = (program: Command) => {
@@ -74,9 +62,8 @@ const addBaseCommands = (program: Command) => {
       if (ensureRegistryMigrationIfNeeded(cfg)) return;
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const [, files] = await base.migrate.latest();
-        console.log(files.length ? files.join("\n") : "Base up to date");
+        const { migrations } = await manager.baseMigrator().latest();
+        console.log(migrations.length ? migrations.join("\n") : "Base up to date");
       } finally {
         await manager.destroyAll();
       }
@@ -95,9 +82,8 @@ const addBaseCommands = (program: Command) => {
       if (ensureRegistryMigrationIfNeeded(cfg)) return;
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const [, files] = await base.migrate.latest();
-        console.log(files.length ? files.join("\n") : "Base up to date");
+        const { migrations } = await manager.baseMigrator().latest();
+        console.log(migrations.length ? migrations.join("\n") : "Base up to date");
       } finally {
         await manager.destroyAll();
       }
@@ -111,9 +97,8 @@ const addBaseCommands = (program: Command) => {
       const cfg = await loadCliConfig(opts.config);
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const [, files] = await base.migrate.rollback();
-        console.log(files.length ? files.join("\n") : "Nothing to rollback");
+        const { migrations } = await manager.baseMigrator().rollback();
+        console.log(migrations.length ? migrations.join("\n") : "Nothing to rollback");
       } finally {
         await manager.destroyAll();
       }
@@ -127,9 +112,8 @@ const addBaseCommands = (program: Command) => {
       const cfg = await loadCliConfig(opts.config);
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const [, files] = await base.migrate.rollback();
-        console.log(files.length ? files.join("\n") : "Nothing to rollback");
+        const { migrations } = await manager.baseMigrator().rollback();
+        console.log(migrations.length ? migrations.join("\n") : "Nothing to rollback");
       } finally {
         await manager.destroyAll();
       }
@@ -153,10 +137,9 @@ const addTenantCommands = (program: Command) => {
         const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
         for (const tenant of tenants) {
           const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
-          const tenantKnex = manager.getTenant(tenant.id, pwd);
-          const [, files] = await tenantKnex.migrate.latest();
-          console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "up to date"}`);
-          await tenantKnex.destroy();
+          const { migrations } = await manager.tenantMigrator(tenant.id, pwd).latest();
+          console.log(`Tenant ${tenant.id}: ${migrations.length ? migrations.join(", ") : "up to date"}`);
+          await manager.destroyTenant(tenant.id);
         }
       } finally {
         await manager.destroyAll();
@@ -174,10 +157,9 @@ const addTenantCommands = (program: Command) => {
         const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
         for (const tenant of tenants) {
           const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
-          const tenantKnex = manager.getTenant(tenant.id, pwd);
-          const [, files] = await tenantKnex.migrate.rollback();
-          console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "Nothing to rollback"}`);
-          await tenantKnex.destroy();
+          const { migrations } = await manager.tenantMigrator(tenant.id, pwd).rollback();
+          console.log(`Tenant ${tenant.id}: ${migrations.length ? migrations.join(", ") : "Nothing to rollback"}`);
+          await manager.destroyTenant(tenant.id);
         }
       } finally {
         await manager.destroyAll();
@@ -315,10 +297,8 @@ const addSeedRunCommands = (program: Command) => {
       }
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const result = await base.seed.run();
-        const files = Array.isArray(result) ? result[0] : [];
-        console.log(files.length ? files.join("\n") : "No seeds executed");
+        const { seeds } = await manager.baseSeeder().run();
+        console.log(seeds.length ? seeds.join("\n") : "No seeds executed");
       } finally {
         await manager.destroyAll();
       }
@@ -336,10 +316,8 @@ const addSeedRunCommands = (program: Command) => {
       }
       const manager = createTenoraFactory(cfg);
       try {
-        const base = manager.getBase();
-        const result = await base.seed.run();
-        const files = Array.isArray(result) ? result[0] : [];
-        console.log(files.length ? files.join("\n") : "No seeds executed");
+        const { seeds } = await manager.baseSeeder().run();
+        console.log(seeds.length ? seeds.join("\n") : "No seeds executed");
       } finally {
         await manager.destroyAll();
       }
@@ -361,11 +339,9 @@ const addSeedRunCommands = (program: Command) => {
         const tenants = await listTenantsFromRegistry(manager.getBase(), cfg);
         for (const tenant of tenants) {
           const pwd = getTenantPassword(tenant, cfg.decryptPassword, cfg);
-          const tenantKnex = manager.getTenant(tenant.id, pwd);
-          const result = await tenantKnex.seed.run();
-          const files = Array.isArray(result) ? result[0] : [];
-          console.log(`Tenant ${tenant.id}: ${files.length ? files.join(", ") : "No seeds executed"}`);
-          await tenantKnex.destroy();
+          const { seeds } = await manager.tenantSeeder(tenant.id, pwd).run();
+          console.log(`Tenant ${tenant.id}: ${seeds.length ? seeds.join(", ") : "No seeds executed"}`);
+          await manager.destroyTenant(tenant.id);
         }
       } finally {
         await manager.destroyAll();

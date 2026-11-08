@@ -585,7 +585,7 @@ const serverConfig = (engine, database) => {
 
 describe("introspection against a real database", () => {
   for (const engine of loadEngines()) {
-    const skip = engine.skip || (engine.id === "sqlite3" ? "the sqlite3 driver is dropped in 1.0" : false);
+    const skip = engine.skip || false;
     describe(engine.label, { skip }, () => {
       const dialect = DIALECT[engine.id];
       const isSqlite = dialect === "sqlite";

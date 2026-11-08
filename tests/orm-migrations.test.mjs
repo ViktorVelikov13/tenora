@@ -47,7 +47,6 @@ after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 const DIALECT = { "better-sqlite3": "sqlite", postgres: "postgres", mysql: "mysql", mariadb: "mariadb", mssql: "mssql" };
 const ORM_CLIENT = { postgres: "pg", mysql: "mysql2", mariadb: "mariadb", mssql: "mssql" };
-const NOT_YET = { sqlite3: "the sqlite3 driver is dropped in 1.0" };
 
 /** Each dialect's DDL for a small table, as a migration would write it by hand. */
 const CREATE = {
@@ -151,7 +150,7 @@ export const down = async ({ db }: MigrationContext): Promise<void> => { ${drop(
 
 describe("migrations against a real database", () => {
   for (const engine of loadEngines()) {
-    const skip = engine.skip || NOT_YET[engine.id] || false;
+    const skip = engine.skip || false;
     describe(engine.label, { skip }, () => {
       const isSqlite = engine.id === "better-sqlite3";
       const dialect = DIALECT[engine.id];

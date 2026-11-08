@@ -12,7 +12,7 @@ export default defineConfig({
   fixedExtension: false,
   deps: {
     neverBundle: [
-      "knex",
+      "@tenora/orm",
       "commander",
     ],
   },

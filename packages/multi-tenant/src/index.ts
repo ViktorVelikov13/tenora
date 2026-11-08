@@ -3,8 +3,7 @@ export * from "./config";
 export {
   createTenoraFactory,
   createTenoraFactoryAsync,
-  createKnexFactory,
   checkTenantSchemaDump,
-} from "./knexFactory";
+} from "./tenoraFactory";
 export * from "./password";
 export * from "./tenantResolver";

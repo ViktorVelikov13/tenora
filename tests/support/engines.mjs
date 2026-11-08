@@ -80,7 +80,7 @@ const postgresSql = {
     firstRows(await admin.raw("select 1 from pg_database where datname = ?", [name])).length > 0,
   userExists: async (admin, name) =>
     firstRows(await admin.raw("select 1 from pg_roles where rolname = ?", [name])).length > 0,
-  currentUser: async (db) => firstRows(await db.raw("select current_user as name"))[0].name,
+  currentUserSql: "select current_user as name",
   cleanup: async (admin, { databases, users }) => {
     for (const name of databases) {
       await admin.raw(
@@ -102,8 +102,7 @@ const mysqlSql = {
     ).length > 0,
   userExists: async (admin, name) =>
     firstRows(await admin.raw("select 1 from mysql.user where user = ?", [name])).length > 0,
-  currentUser: async (db) =>
-    firstRows(await db.raw("select substring_index(current_user(), '@', 1) as name"))[0].name,
+  currentUserSql: "select substring_index(current_user(), '@', 1) as name",
   cleanup: async (admin, { databases, users }) => {
     for (const name of databases) {
       await admin.raw(`drop database if exists \`${name}\``);
@@ -120,7 +119,7 @@ const mssqlSql = {
   userExists: async (admin, name) =>
     firstRows(await admin.raw("select name from sys.server_principals where name = ?", [name]))
       .length > 0,
-  currentUser: async (db) => firstRows(await db.raw("select suser_sname() as name"))[0].name,
+  currentUserSql: "select suser_sname() as name",
   cleanup: async (admin, { databases, users }) => {
     for (const name of databases) {
       await admin.raw(
@@ -142,7 +141,6 @@ export const loadEngines = () => {
     ["mssql", "SQL Server", mssqlSql],
   ];
   return [
-    sqliteEngine("sqlite3"),
     sqliteEngine("better-sqlite3"),
     ...entries.map(([id, label, sql]) => ({
       ...serverEngine(id, label, servers[id], sql),

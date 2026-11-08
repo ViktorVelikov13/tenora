@@ -1,9 +1,9 @@
-import type { Knex } from "knex";
+import type { Connection } from "@tenora/orm";
 import type { TenantResolverOptions, TenantResolver } from "./types";
 
 /**
  * Framework-agnostic tenant resolver.
- * Call the returned function inside your middleware/pre-handler to attach a tenant-bound knex to the request.
+ * Call the returned function inside your middleware/pre-handler to attach a tenant-bound connection to the request.
  */
 export const createTenantResolver = <Req extends { [k: string]: any }>(
   opts: TenantResolverOptions<Req>
@@ -16,7 +16,7 @@ export const createTenantResolver = <Req extends { [k: string]: any }>(
     attach,
   } = opts;
 
-  return async (req: Req): Promise<{ tenantId?: string; knex?: Knex }> => {
+  return async (req: Req): Promise<{ tenantId?: string; db?: Connection }> => {
     const tenantId = await tenantIdResolver(req);
     if (!tenantId) return {};
 
@@ -25,20 +25,20 @@ export const createTenantResolver = <Req extends { [k: string]: any }>(
       password = await passwordProvider(tenantId);
     }
 
-    const knex = manager.getTenant(tenantId, password);
+    const db = manager.getTenant(tenantId, password);
 
     if (authorizer) {
       await authorizer(tenantId, req);
     }
 
-    // default attach shape: req.tenantId + req.knex
+    // default attach shape: req.tenantId + req.db
     if (attach) {
-      attach(req, tenantId, knex);
+      attach(req, tenantId, db);
     } else {
       (req as any).tenantId = tenantId;
-      (req as any).knex = knex;
+      (req as any).db = db;
     }
 
-    return { tenantId, knex };
+    return { tenantId, db };
   };
 };

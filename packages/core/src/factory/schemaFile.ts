@@ -1,11 +1,11 @@
 import fs from "fs";
-import type { Knex } from "knex";
 import path from "path";
-import type { MultiTenantOptions, SchemaDumpStatus, TenoraClient } from "../types";
-import { resolveKnexRequire } from "../runtime/resolveKnex";
-import { isMysqlClient, isPostgresClient, isSqliteClient, resolveClient } from "./shared";
+import { type Dialect, listMigrationFiles } from "@tenora/orm";
+import type { BaseConnectionConfig, MultiTenantOptions, SchemaDumpStatus } from "../types";
+import { readKnexOptions } from "./knexOptions";
+import { isMssqlClient, isMysqlClient, isPostgresClient, isSqliteClient, resolveClient } from "./shared";
 
-export type SchemaDialect = "postgres" | "mysql" | "mariadb" | "sqlite";
+export type SchemaDialect = Exclude<Dialect, "mssql">;
 
 export type SchemaDump = {
   file: string;
@@ -14,20 +14,19 @@ export type SchemaDump = {
   migrations: string[];
 };
 
-type MigrationSource = Knex.MigrationSource<unknown>;
-type FsMigrationsClass = new (
-  directories: string | readonly string[],
-  sortDirsSeparately?: boolean,
-  loadExtensions?: readonly string[]
-) => MigrationSource;
+export const DEFAULT_MIGRATIONS_TABLE = "tenora_migrations";
 
 const HEADER = [
   "-- Tenora tenant schema dump, written by `tenora schema:dump:tenants`. Do not edit it by hand.",
   "-- New tenant databases load it, then run only the migrations that are not listed here.",
 ];
 const MIGRATION_LINE = /^-- migration: (.+)$/;
+const BOOKKEEPING_LINE = /^-- bookkeeping: (.+)$/;
 
-export const resolveSchemaDialect = (client: TenoraClient): SchemaDialect | undefined => {
+export const resolveSchemaDialect = (base: BaseConnectionConfig): SchemaDialect | undefined => {
+  const client = resolveClient(base.client);
+  if (isMssqlClient(client) || base.dialect === "mssql") return undefined;
+  if (base.dialect) return base.dialect;
   if (isPostgresClient(client)) return "postgres";
   if (client === "mariadb") return "mariadb";
   if (isMysqlClient(client)) return "mysql";
@@ -35,64 +34,77 @@ export const resolveSchemaDialect = (client: TenoraClient): SchemaDialect | unde
   return undefined;
 };
 
-/** The tenant migration config exactly as the factory hands it to Knex. */
-export const resolveTenantMigrations = (
-  options: MultiTenantOptions
-): Knex.MigratorConfig | undefined => {
-  const knexOptions = (options.knexOptions ?? {}) as Knex.Config;
-  if ("migrations" in knexOptions) return knexOptions.migrations;
-  const directory = options.tenant?.migrationsDir;
-  return directory ? { directory } : undefined;
-};
+export const resolveMigrationsTable = (options: MultiTenantOptions): string =>
+  options.migrations?.table ?? DEFAULT_MIGRATIONS_TABLE;
 
-const migrationDirectories = (migrations: Knex.MigratorConfig | undefined): string[] => {
-  const directory = migrations?.directory;
-  if (!directory) return [];
-  return Array.isArray(directory) ? [...directory] : [directory as string];
+/** The directories the factory reads tenant migrations from; empty when none is configured. */
+export const resolveTenantMigrationDirectories = (options: MultiTenantOptions): string[] => {
+  const directory = options.tenant?.migrationsDir;
+  return readKnexOptions(options).migrationDirectories ?? (directory ? [directory] : []);
 };
 
 export const resolveSchemaFile = (options: MultiTenantOptions): string | undefined => {
   const setting = options.tenant?.schemaFile;
-  const dialect = resolveSchemaDialect(resolveClient(options.base.client));
+  const dialect = resolveSchemaDialect(options.base);
   if (setting === false || !dialect) return undefined;
   if (typeof setting === "string") return setting;
-  const [directory] = migrationDirectories(resolveTenantMigrations(options));
+  const [directory] = resolveTenantMigrationDirectories(options);
   return directory ? path.join(path.dirname(directory), "schema", `tenant-${dialect}.sql`) : undefined;
 };
 
-const readCache = new Map<string, { mtimeMs: number; size: number; dump: SchemaDump }>();
+const readCache = new Map<string, { mtimeMs: number; size: number; dump: SchemaDump; bookkeeping?: string }>();
 
-export const readSchemaDump = (file: string): SchemaDump | undefined => {
+const parseDump = (file: string) => {
+  const sql = fs.readFileSync(file, "utf8");
+  const migrations: string[] = [];
+  let bookkeeping: string | undefined;
+  for (const line of sql.split("\n")) {
+    if (line.trim() && !line.startsWith("--")) break;
+    const trimmed = line.trimEnd();
+    const migration = MIGRATION_LINE.exec(trimmed);
+    if (migration) migrations.push(migration[1]);
+    bookkeeping = BOOKKEEPING_LINE.exec(trimmed)?.[1] ?? bookkeeping;
+  }
+  return { dump: { file, sql, migrations }, bookkeeping };
+};
+
+/** Reads a dump, and refuses one whose rows would not land in the table the migrator reads. */
+export const readSchemaDump = (file: string, table: string): SchemaDump | undefined => {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(file);
   } catch {
     return undefined;
   }
-  const cached = readCache.get(file);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.dump;
-
-  const sql = fs.readFileSync(file, "utf8");
-  const migrations: string[] = [];
-  for (const line of sql.split("\n")) {
-    if (line.trim() && !line.startsWith("--")) break;
-    const match = MIGRATION_LINE.exec(line.trimEnd());
-    if (match) migrations.push(match[1]);
+  let cached = readCache.get(file);
+  if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+    cached = { mtimeMs: stat.mtimeMs, size: stat.size, ...parseDump(file) };
+    readCache.set(file, cached);
   }
-  const dump = { file, sql, migrations };
-  readCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, dump });
-  return dump;
+  if (!cached.bookkeeping) {
+    throw new Error(
+      `Tenora: the schema dump ${file} was written by Tenora 0.x, so it records its migrations in Knex's table. Run tenora upgrade to convert it.`
+    );
+  }
+  if (cached.bookkeeping !== table) {
+    throw new Error(
+      `Tenora: the schema dump ${file} records its migrations in "${cached.bookkeeping}", but migrations.table is "${table}". Run tenora schema:dump:tenants to write it again.`
+    );
+  }
+  return cached.dump;
 };
 
 export const writeSchemaDump = (
   file: string,
   dialect: SchemaDialect,
+  table: string,
   migrations: string[],
   body: string
 ) => {
   const content = [
     ...HEADER,
     `-- dialect: ${dialect}`,
+    `-- bookkeeping: ${table}`,
     ...migrations.map((name) => `-- migration: ${name}`),
     "",
     body.trim(),
@@ -102,105 +114,31 @@ export const writeSchemaDump = (
   fs.writeFileSync(file, content);
 };
 
-const loadFsMigrations = (): FsMigrationsClass =>
-  resolveKnexRequire()("./lib/migrations/migrate/sources/fs-migrations").FsMigrations;
-
-type PrunedMigration = { file: string; prunedInto: string };
-
-const isPruned = (migration: unknown): migration is PrunedMigration =>
-  typeof migration === "object" && migration !== null && "prunedInto" in migration;
-
-const prunedMigration = ({ file, prunedInto }: PrunedMigration) => ({
-  up: async () => {
-    throw new Error(
-      `Tenora: this tenant never ran migration "${file}", and its file was pruned into the schema dump ${prunedInto}. ` +
-        "Restore the file from version control, run migrate:tenants, then prune again."
-    );
-  },
-  down: async () => {
-    throw new Error(
-      `Tenora: migration "${file}" was pruned into the schema dump ${prunedInto}, so it cannot be rolled back.`
-    );
-  },
-});
-
-/**
- * Lists the migrations the dump contains alongside the files on disk, so tenants keep migrating after
- * `--prune` deleted those files. Knex would otherwise call the migrations directory corrupt.
- */
-export const withSchemaDumpMigrations = (
-  migrations: Knex.MigratorConfig,
-  dump: SchemaDump
-): Knex.MigratorConfig => {
-  if (migrations.migrationSource || !migrations.directory) return migrations;
-  // Knex replaces a migrationSource with its own whenever these file options are set too.
-  const { directory, sortDirsSeparately, loadExtensions, ...rest } = migrations;
-  const FsMigrations = loadFsMigrations();
-  const onDisk = new FsMigrations(directory, sortDirsSeparately, loadExtensions);
-
-  const migrationSource: MigrationSource = {
-    getMigrations: async (defaultExtensions) => {
-      const files = await onDisk.getMigrations(loadExtensions ?? defaultExtensions);
-      const present = new Set(files.map((file) => onDisk.getMigrationName(file)));
-      const pruned: PrunedMigration[] = dump.migrations
-        .filter((name) => !present.has(name))
-        .map((file) => ({ file, prunedInto: dump.file }));
-      return [...pruned, ...files];
-    },
-    getMigrationName: (migration) =>
-      isPruned(migration) ? migration.file : onDisk.getMigrationName(migration),
-    getMigration: async (migration) =>
-      isPruned(migration) ? prunedMigration(migration) : onDisk.getMigration(migration),
-  };
-  return { ...rest, migrationSource };
-};
-
-const listMigrationFiles = async (migrations: Knex.MigratorConfig) => {
-  const FsMigrations = loadFsMigrations();
-  const onDisk = new FsMigrations(
-    migrationDirectories(migrations),
-    migrations.sortDirsSeparately,
-    migrations.loadExtensions
-  );
-  // Undefined falls back to Knex's default extensions inside FsMigrations.
-  const files = (await onDisk.getMigrations(migrations.loadExtensions as readonly string[])) as {
-    file: string;
-    directory: string;
-  }[];
-  return files;
-};
-
 /** Deletes the migration files whose names the dump contains, and returns their paths. */
-export const pruneMigrationFiles = async (
-  migrations: Knex.MigratorConfig,
-  dumped: string[]
-): Promise<string[]> => {
+export const pruneMigrationFiles = async (directories: string[], dumped: string[]): Promise<string[]> => {
   const names = new Set(dumped);
   const pruned: string[] = [];
-  for (const { file, directory } of await listMigrationFiles(migrations)) {
-    if (!names.has(file)) continue;
-    const filePath = path.join(directory, file);
-    fs.rmSync(filePath);
-    pruned.push(filePath);
+  for (const { name, file } of await listMigrationFiles({ directories })) {
+    if (!names.has(name)) continue;
+    fs.rmSync(file);
+    pruned.push(file);
   }
   return pruned;
 };
 
 /** Compares the migration files on disk with the dump, without touching a database. */
-export const checkTenantSchemaDump = async (
-  options: MultiTenantOptions
-): Promise<SchemaDumpStatus> => {
+export const checkTenantSchemaDump = async (options: MultiTenantOptions): Promise<SchemaDumpStatus> => {
   const file = resolveSchemaFile(options);
-  const migrations = resolveTenantMigrations(options);
-  if (!file || !migrations?.directory) {
+  const directories = resolveTenantMigrationDirectories(options);
+  if (!file || !directories.length) {
     throw new Error(
       "Tenora: schema dumps need tenant.migrationsDir, a client other than SQL Server, and tenant.schemaFile not set to false."
     );
   }
-  const dump = readSchemaDump(file);
+  const dump = readSchemaDump(file, resolveMigrationsTable(options));
   const contained = new Set(dump?.migrations ?? []);
-  const missing = (await listMigrationFiles(migrations))
-    .map(({ file: name }) => name)
+  const missing = (await listMigrationFiles({ directories }))
+    .map(({ name }) => name)
     .filter((name) => !contained.has(name));
   return { file, exists: Boolean(dump), missing };
 };

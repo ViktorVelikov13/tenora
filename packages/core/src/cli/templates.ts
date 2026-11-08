@@ -33,8 +33,22 @@ export const resolveTemplateModuleType = (opts: { esm?: boolean; cjs?: boolean }
   return detectModuleType();
 };
 
-export const normalizeCreatedPath = (created: string | string[]): string =>
-  Array.isArray(created) ? created[0] : created;
+const timestamp = () =>
+  new Date()
+    .toISOString()
+    .replace(/[-:T.Z]/g, "")
+    .slice(0, 14);
+
+/** The path of a new migration file, whose timestamp makes it sort after the ones before it. */
+export const newMigrationPath = (directory: string, name: string): string =>
+  path.resolve(directory, `${timestamp()}_${name}.js`);
+
+export const newSeedPath = (directory: string, name: string): string => path.resolve(directory, `${name}.js`);
+
+const writeNewFile = (filePath: string, body: string) => {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, body);
+};
 
 const tokenizeName = (name: string): string[] =>
   name
@@ -102,31 +116,27 @@ const inferAlterRemove = (tokens: string[]) => {
   return { table, columns: cols };
 };
 
+const moduleExport = (name: "up" | "down" | "seed", moduleType: "esm" | "cjs") =>
+  moduleType === "esm" ? `export const ${name}` : `exports.${name}`;
+
 const buildCreateTableTemplate = (table: string, moduleType: "esm" | "cjs") =>
-  moduleType === "esm"
-    ? `export const up = (knex) =>\n  knex.schema.createTable(\"${table}\", (t) => {\n    t.increments(\"id\").primary();\n    t.timestamps(true, true);\n  });\n\nexport const down = (knex) => knex.schema.dropTableIfExists(\"${table}\");\n`
-    : `exports.up = (knex) =>\n  knex.schema.createTable(\"${table}\", (t) => {\n    t.increments(\"id\").primary();\n    t.timestamps(true, true);\n  });\n\nexports.down = (knex) => knex.schema.dropTableIfExists(\"${table}\");\n`;
+  `${moduleExport("up", moduleType)} = ({ schema }) =>\n  schema.create("${table}", (t) => {\n    t.id();\n    t.timestamps();\n  });\n\n${moduleExport("down", moduleType)} = ({ schema }) => schema.dropIfExists("${table}");\n`;
 
-const buildAlterAddTemplate = (table: string, columns: string[], moduleType: "esm" | "cjs") => {
-  const addLines = columns.map((c) => `    t.string(\"${c}\");`).join("\n");
-  const dropLines = columns.map((c) => `    t.dropColumn(\"${c}\");`).join("\n");
-  return moduleType === "esm"
-    ? `export const up = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${addLines}\n  });\n\nexport const down = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${dropLines}\n  });\n`
-    : `exports.up = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${addLines}\n  });\n\nexports.down = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${dropLines}\n  });\n`;
-};
+const alterTable = (table: string, lines: string[]) =>
+  `({ schema }) =>\n  schema.table("${table}", (t) => {\n${lines.join("\n")}\n  });\n`;
 
-const buildAlterRemoveTemplate = (table: string, columns: string[], moduleType: "esm" | "cjs") => {
-  const dropLines = columns.map((c) => `    t.dropColumn(\"${c}\");`).join("\n");
-  const addLines = columns.map((c) => `    t.string(\"${c}\");`).join("\n");
-  return moduleType === "esm"
-    ? `export const up = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${dropLines}\n  });\n\nexport const down = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${addLines}\n  });\n`
-    : `exports.up = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${dropLines}\n  });\n\nexports.down = (knex) =>\n  knex.schema.alterTable(\"${table}\", (t) => {\n${addLines}\n  });\n`;
-};
+// Nullable, because a table that already has rows cannot take a new required column without a default.
+const addColumnLines = (columns: string[]) => columns.map((c) => `    t.string("${c}").nullable();`);
+const dropColumnLines = (columns: string[]) => columns.map((c) => `    t.dropColumn("${c}");`);
+
+const buildAlterAddTemplate = (table: string, columns: string[], moduleType: "esm" | "cjs") =>
+  `${moduleExport("up", moduleType)} = ${alterTable(table, addColumnLines(columns))}\n${moduleExport("down", moduleType)} = ${alterTable(table, dropColumnLines(columns))}`;
+
+const buildAlterRemoveTemplate = (table: string, columns: string[], moduleType: "esm" | "cjs") =>
+  `${moduleExport("up", moduleType)} = ${alterTable(table, dropColumnLines(columns))}\n${moduleExport("down", moduleType)} = ${alterTable(table, addColumnLines(columns))}`;
 
 const buildDefaultMigrationTemplate = (moduleType: "esm" | "cjs") =>
-  moduleType === "esm"
-    ? `export const up = (knex) => {\n  // TODO\n};\n\nexport const down = (knex) => {\n  // TODO\n};\n`
-    : `exports.up = (knex) => {\n  // TODO\n};\n\nexports.down = (knex) => {\n  // TODO\n};\n`;
+  `${moduleExport("up", moduleType)} = ({ db, schema }) => {\n  // TODO\n};\n\n${moduleExport("down", moduleType)} = ({ db, schema }) => {\n  // TODO\n};\n`;
 
 export const writeMigrationTemplate = (filePath: string, moduleType: "esm" | "cjs", name: string) => {
   const tokens = tokenizeName(name);
@@ -140,13 +150,9 @@ export const writeMigrationTemplate = (filePath: string, moduleType: "esm" | "cj
       : createTable
         ? buildCreateTableTemplate(createTable, moduleType)
         : buildDefaultMigrationTemplate(moduleType);
-  fs.writeFileSync(filePath, body);
+  writeNewFile(filePath, body);
 };
 
 export const writeSeedTemplate = (filePath: string, moduleType: "esm" | "cjs") => {
-  const body =
-    moduleType === "esm"
-      ? `export const seed = async (knex) => {\n  // TODO\n};\n`
-      : `exports.seed = async (knex) => {\n  // TODO\n};\n`;
-  fs.writeFileSync(filePath, body);
+  writeNewFile(filePath, `${moduleExport("seed", moduleType)} = async ({ db }) => {\n  // TODO\n};\n`);
 };

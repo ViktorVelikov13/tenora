@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { after, before, describe, it } from "node:test";
 import knex from "knex";
-import { Model } from "objection";
+import { Model, sql } from "../packages/orm/dist/index.js";
 import {
   createTenantResolver,
   createTenoraFactory,
@@ -17,10 +17,13 @@ const LEGACY_ENC_PASSWORD = "U2FsdGVkX18DyfwYG55+0AtEmJVcMdiLWW/6SjVlV1g=";
 const REGISTRY = "tenora_tenants";
 
 const seedInserting = (table, column, value) =>
-  `export const seed = async (knex) => {\n  await knex("${table}").insert({ ${column}: "${value}" });\n};\n`;
+  `export const seed = async ({ db }) => {\n  await db.table("${table}").insert({ ${column}: "${value}" });\n};\n`;
 
 const tableCreating = (table) =>
-  `export const up = (knex) =>\n  knex.schema.createTable("${table}", (t) => {\n    t.increments("id").primary();\n    t.string("name");\n  });\n\nexport const down = (knex) => knex.schema.dropTableIfExists("${table}");\n`;
+  `export const up = ({ schema }) =>\n  schema.create("${table}", (t) => {\n    t.increments("id");\n    t.string("name").nullable();\n  });\n\nexport const down = ({ schema }) => schema.dropIfExists("${table}");\n`;
+
+/** The login a Tenora connection is really using. */
+const currentUser = async (engine, db) => (await db.raw(sql`${sql.raw(engine.currentUserSql)}`))[0].name;
 
 describe("configuration options against a real database", () => {
   for (const engine of loadEngines()) {
@@ -190,7 +193,7 @@ describe("Postgres with a non-superuser admin, as on managed hosting", () => {
         await manager.createTenantDb(tenantId, "Tenant!Pw#5-tenora");
         const tenantDb = manager.getTenant(tenantId, "Tenant!Pw#5-tenora");
         assert.equal(await tenantDb.schema.hasTable("notes"), true);
-        assert.equal(await engine.currentUser(tenantDb), `user_${tenantId}`);
+        assert.equal(await currentUser(engine, tenantDb), `user_${tenantId}`);
       } finally {
         await manager.destroyAll();
       }
@@ -315,12 +318,13 @@ describe("full lifecycle against a real database", () => {
 
         const result = assertOk(cli(["migrate"]));
 
-        assert.match(result.stdout, new RegExp(migration));
+        assert.match(result.stdout, new RegExp(migration.replace(/\.js$/, "")));
         assert.equal(await observe(baseDb).schema.hasTable(REGISTRY), true);
         for (const column of ["id", "password", "encrypted_password", "created_at", "updated_at"]) {
           assert.equal(await observe(baseDb).schema.hasColumn(REGISTRY, column), true, column);
         }
-        assert.equal((await rows(baseDb, "knex_migrations")).length, 1);
+        assert.equal((await rows(baseDb, "tenora_migrations")).length, 1);
+        assert.equal(await observe(baseDb).schema.hasTable("knex_migrations"), false);
       });
 
       it("migrate reports up to date when nothing is pending", () => {
@@ -331,7 +335,7 @@ describe("full lifecycle against a real database", () => {
         const result = assertOk(cli(["migrate", "--create-base"]));
 
         assert.doesNotMatch(result.stdout, /created base database/);
-        assert.equal((await rows(baseDb, "knex_migrations")).length, 1);
+        assert.equal((await rows(baseDb, "tenora_migrations")).length, 1);
       });
 
       it("make:migration output is applied by migrate, and migrate:base does the same", async () => {
@@ -376,7 +380,7 @@ describe("full lifecycle against a real database", () => {
           project,
           assertOk(cli(["make:migration:tenants", "create_notes_table"]))
         );
-        // Knex timestamps have one-second resolution, and later tests add a migration that
+        // Migration timestamps have one-second resolution, and later tests add a migration that
         // must sort after this one on a fresh database.
         project.delete(migration);
         project.write("migrations/tenants/20000101000000_create_notes_table.js", tableCreating("notes"));
@@ -438,7 +442,7 @@ describe("full lifecycle against a real database", () => {
       it("getTenant connects as the per-tenant user, and the password is really checked", { skip: !engine.perTenantUsers }, async () => {
         await withFactory(async (manager) => {
           const tenantDb = manager.getTenant(tenants.plain, passwords.plain);
-          assert.equal(await engine.currentUser(tenantDb), userOf(tenants.plain));
+          assert.equal(await currentUser(engine, tenantDb), userOf(tenants.plain));
         });
 
         const wrongPassword = knex(
@@ -533,7 +537,7 @@ describe("full lifecycle against a real database", () => {
         }
       });
 
-      it("createTenantResolver attaches a knex bound to the requested tenant", async () => {
+      it("createTenantResolver attaches a connection bound to the requested tenant", async () => {
         await withFactory(async (manager) => {
           const resolve = createTenantResolver({
             manager,
@@ -545,21 +549,23 @@ describe("full lifecycle against a real database", () => {
           await resolve(req);
 
           assert.equal(req.tenantId, tenants.plain);
-          const names = (await req.knex("notes").select()).map((row) => row.name);
+          const names = await req.db.table("notes").pluck("name");
           assert.ok(names.includes("only-in-plain"));
         });
       });
 
-      it("works with Objection models on a tenant connection", async () => {
+      it("works with models on a tenant connection", async () => {
         class Note extends Model {
-          static tableName = "notes";
+          static table = "notes";
+          static timestamps = false;
+          static fillable = ["name"];
         }
 
         await withFactory(async (manager) => {
           const tenantDb = manager.getTenant(tenants.enc, passwords.enc);
-          const inserted = await Note.query(tenantDb).insert({ name: "via-objection" });
-          const fetched = await Note.query(tenantDb).findById(inserted.id);
-          assert.equal(fetched.name, "via-objection");
+          const created = await Note.on(tenantDb).create({ name: "via-model" });
+          const fetched = await Note.on(tenantDb).find(created.id);
+          assert.equal(fetched.name, "via-model");
         });
       });
 
@@ -602,7 +608,7 @@ describe("full lifecycle against a real database", () => {
       it("dropTenantDb closes the manager's own connection and removes the tenant", async () => {
         await withFactory(async (manager) => {
           const cached = manager.getTenant(tenants.enc, passwords.enc);
-          await cached("notes").select();
+          await cached.table("notes").get();
           await forget(tenants.enc);
 
           await manager.dropTenantDb(tenants.enc);

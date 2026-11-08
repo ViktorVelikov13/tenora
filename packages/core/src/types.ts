@@ -1,23 +1,14 @@
-import type { Knex } from "knex";
+import type { Client, Connection, Dialect, Migrator, PoolOptions, Seeder } from "@tenora/orm";
 
-export type TenoraClient =
-  | "pg"
-  | "postgres"
-  | "postgresql"
-  | "mysql"
-  | "mysql2"
-  | "mariadb"
-  | "sqlite3"
-  | "better-sqlite3"
-  | "sqlite"
-  | "mssql"
-  | "sqlserver";
+export type TenoraClient = Client;
 
 export type BaseConnectionConfig = {
-  /** Knex client/driver name (e.g., "pg", "mysql2"). Defaults to "pg". */
+  /** the driver: "pg", "mysql2", "mariadb", "better-sqlite3" or "mssql". Defaults to "pg". */
   client?: TenoraClient;
-  /** Full Knex connection config override. */
-  connection?: Knex.ConnectionConfig;
+  /** the SQL dialect, when the driver's default is not right, e.g. "mariadb" for a MariaDB server reached through mysql2 */
+  dialect?: Dialect;
+  /** Full driver connection config override. */
+  connection?: Record<string, unknown>;
   host?: string;
   port?: number;
   user?: string;
@@ -26,8 +17,8 @@ export type BaseConnectionConfig = {
   /** admin database name (defaults to "postgres" for pg and "mysql" for mysql) */
   adminDatabase?: string;
   // Optional SSL/TLS configuration forwarded to the underlying driver (pg/mysql/etc.)
-  ssl?: Knex.PgConnectionConfig['ssl'] | Record<string, unknown>;
-  pool?: Knex.PoolConfig;
+  ssl?: boolean | Record<string, unknown>;
+  pool?: PoolOptions;
   migrationsDir?: string;
   seedsDir?: string;
 };
@@ -35,9 +26,9 @@ export type BaseConnectionConfig = {
 export type TenantConfig = {
   /** prefix used when creating per-tenant users, defaults to `user_` */
   userPrefix?: string;
-  /** directory with tenant migrations (passed to Knex) */
+  /** directory with tenant migrations */
   migrationsDir?: string;
-  /** directory with tenant seeds (passed to Knex) */
+  /** directory with tenant seeds */
   seedsDir?: string;
   /** SQLite tenant DB directory (default: base DB dir or cwd) */
   databaseDir?: string;
@@ -52,9 +43,9 @@ export type TenantConfig = {
    */
   schemaFile?: string | false;
   /** custom pool settings for tenant connections */
-  pool?: Knex.PoolConfig;
+  pool?: PoolOptions;
   /** override ssl option for tenant connections */
-  ssl?: Knex.PgConnectionConfig['ssl'];
+  ssl?: boolean | Record<string, unknown>;
 };
 
 export type TenantRegistryOptions = {
@@ -75,7 +66,15 @@ export type TenantRegistryOptions = {
 export type MultiTenantOptions = {
   base: BaseConnectionConfig;
   tenant?: TenantConfig;
-  knexOptions?: Omit<Knex.Config, "client" | "connection">;
+  migrations?: {
+    /** the table that records which migrations ran, in every database (default: tenora_migrations) */
+    table?: string;
+  };
+  /**
+   * @deprecated The 0.x Knex settings. Only `pool`, `migrations.directory` and `seeds.directory` still apply; anything
+   * else is ignored with a warning.
+   */
+  knexOptions?: Record<string, unknown>;
   registry?: TenantRegistryOptions;
   /** optional encrypt hook for storing tenant DB passwords */
   encryptPassword?: (plain: string) => string;
@@ -88,8 +87,16 @@ export type TenantAuthorizer<Req = any> = (tenantId: string, request: Req) => Pr
 export type TenantIdResolver<Req = any> = (request: Req) => Promise<string | undefined> | string | undefined;
 
 export interface TenantManager {
-  getBase(): Knex;
-  getTenant(tenantId: string, password?: string): Knex;
+  getBase(): Connection;
+  getTenant(tenantId: string, password?: string): Connection;
+  /** the migrator for the base database; needs `base.migrationsDir` */
+  baseMigrator(): Migrator;
+  /** the migrator for one tenant's database; needs `tenant.migrationsDir` */
+  tenantMigrator(tenantId: string, password?: string): Migrator;
+  /** the seeder for the base database; needs `base.seedsDir` */
+  baseSeeder(): Seeder;
+  /** the seeder for one tenant's database; needs `tenant.seedsDir` */
+  tenantSeeder(tenantId: string, password?: string): Seeder;
   createTenantDb(tenantId: string, password?: string): Promise<void>;
   /** permanently deletes the tenant database, its user and its registry entry */
   dropTenantDb(tenantId: string, options?: DropTenantOptions): Promise<void>;
@@ -123,7 +130,7 @@ export type SchemaDumpStatus = {
   /** path of the dump file */
   file: string;
   exists: boolean;
-  /** migration files on disk that the dump does not contain */
+  /** migrations with a file on disk that the dump does not contain */
   missing: string[];
 };
 
@@ -132,10 +139,10 @@ export type TenantResolverOptions<Req extends { [k: string]: any } = any> = {
   tenantId: TenantIdResolver<Req>;
   passwordProvider?: TenantPasswordProvider;
   authorizer?: TenantAuthorizer<Req>;
-  attach?: (req: Req, tenantId: string, knex: Knex) => void;
+  attach?: (req: Req, tenantId: string, db: Connection) => void;
 };
 
-export type TenantResolver<Req> = (req: Req) => Promise<{ tenantId?: string; knex?: Knex }>;
+export type TenantResolver<Req> = (req: Req) => Promise<{ tenantId?: string; db?: Connection }>;
 
 export type TenantRecord = {
   id: string;

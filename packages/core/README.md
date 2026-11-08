@@ -13,7 +13,7 @@ Shared core internals for Tenora packages.
 
 ## What it contains
 - Shared types (`MultiTenantOptions`, `TenantManager`, resolver-related types)
-- Tenant manager factory internals (`createTenoraFactory`, `createTenoraFactoryAsync`, `createKnexFactory`)
+- Tenant manager factory internals (`createTenoraFactory`, `createTenoraFactoryAsync`)
 - Password helpers (`generateTenantPassword`, `encryptPassword`, `decryptPassword`)
 - Config loading helpers (`resolveConfigPath`, `loadConfigModuleSync`, `loadConfigModuleAsync`, `unwrapConfig`)
 - Tenant registry helpers (`ensureRegistryMigration`, `ensureRegistryTable`, `listTenantsFromRegistry`, `upsertTenantInRegistry`, `resolveDecrypt`)
