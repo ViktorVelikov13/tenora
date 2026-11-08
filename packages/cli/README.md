@@ -78,6 +78,8 @@ A failure shows what happened to every migration in that run:
 
 The tree only appears when both stdout and stderr are a terminal. Piped or redirected output, CI (`CI` is set) and `TERM=dumb` get the plain lines, which are stable enough for scripts. `NO_COLOR` turns the colours off.
 
+In the tree a failure shows its message only. To see the stack trace, pipe the output, for example `tenora migrate | cat`.
+
 ## Config lookup
 If `--config` is not set, CLI checks this order from current working directory:
 - `tenora.config.js`
