@@ -41,11 +41,44 @@ npx tenora list
 ## Common options
 - `-c, --config <path>`: explicit config file path.
 - `--create-base`: create the base DB if it does not exist.
+- `--step`: make `migrate` and `migrate:tenants` give every migration its own batch, so `rollback` undoes them one at a time. If one fails, the ones before it stay applied.
 - `--esm` / `--cjs`: template module format override for `make:migration*` and `make:seed*`.
 - `--force`: required by `drop:tenant`, which permanently deletes the tenant database, its user and its registry entry.
 - `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry, such as one left behind by a failed create.
 - `--prune`: let `schema:dump:tenants` delete the migration files the new dump contains.
 - `--check`: make `schema:dump:tenants` only check that the dump contains every migration file, without a database.
+
+## Output
+In a terminal, migrations, rollbacks and seeds show a live task tree. Tenants that finished take one line, and the running one opens up to show each migration:
+
+```text
+tenora migrate:tenants
+
+✔ acme  2 migrations · 1.4s
+– globex  up to date
+⠹ initech  1/3
+  ✔ 20270101000000_create_orders.js  612ms
+  ⠹ 20270101000001_add_invoices.js  1.2s
+  ○ 20270101000002_add_audit_log.js
+
+████████████░░░░░░░░░░░░  2/4 tenants  3.1s
+```
+
+A failure shows what happened to every migration in that run:
+
+```text
+✖ initech
+  ↩ 20270101000000_create_orders.js  rolled back
+  ✖ 20270101000001_add_invoices.js
+    relation "customers" does not exist
+  ○ 20270101000002_add_audit_log.js  not run
+
+✖ Stopped on initech. 1 tenant migrated, 1 up to date, 1 not started.
+```
+
+The tree only appears when both stdout and stderr are a terminal. Piped or redirected output, CI (`CI` is set) and `TERM=dumb` get the plain lines, which are stable enough for scripts. `NO_COLOR` turns the colours off.
+
+In the tree a failure shows its message only. To see the stack trace, pipe the output, for example `tenora migrate | cat`.
 
 ## Config lookup
 If `--config` is not set, CLI checks this order from current working directory:
