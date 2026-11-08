@@ -69,12 +69,14 @@ Commands:
 
 Options:
 - `--create-base`: create the base database (from `base.database`) if it does not exist.
+- `--step`: make `migrate` and `migrate:tenants` give every migration its own batch, so `rollback` undoes them one at a time. If one fails, the ones before it stay applied.
 - `--force`: required by `drop:tenant`, which permanently deletes the tenant.
 - `--allow-unregistered`: let `drop:tenant` remove a tenant that is missing from the registry.
 - `--prune`: let `schema:dump:tenants` delete the migration files the new dump contains.
 - `--check`: make `schema:dump:tenants` only check that the dump is up to date, without a database.
 
 Notes:
+- In a terminal, migrations, rollbacks and seeds show a live task tree with each migration's state. Piped or redirected output, CI (`CI` is set) and `TERM=dumb` get the plain lines, and `NO_COLOR` turns the colours off.
 - `make:migration:*` requires the corresponding `migrationsDir`.
 - `make:seed:*` and `seed:run*` require the corresponding `seedsDir`.
 - Template output is auto-selected based on the nearest `package.json` (`"type": "module"` → ESM, otherwise CJS).
