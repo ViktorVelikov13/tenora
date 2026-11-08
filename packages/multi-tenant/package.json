@@ -1,6 +1,6 @@
 {
   "name": "@tenora/multi-tenant",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Reusable multi-tenant helper for Knex + Objection",
   "type": "module",
   "main": "dist/index.js",
@@ -27,7 +27,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@tenora/core": "^0.4.0",
+    "@tenora/core": "^0.5.0",
     "commander": "^15.0.0",
     "knex": "^3.3.0",
     "objection": "^4.4.3"
