@@ -1,6 +1,6 @@
 {
   "name": "@tenora/core",
-  "version": "0.4.0",
+  "version": "1.0.0-canary.0",
   "description": "Shared core utilities for Tenora packages",
   "type": "module",
   "main": "dist/index.js",
@@ -30,7 +30,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@tenora/orm": "^0.4.0",
+    "@tenora/orm": "^1.0.0-canary.0",
     "commander": "^15.0.0"
   },
   "devDependencies": {
