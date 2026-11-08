@@ -2,7 +2,15 @@
  * Turns a Laravel-style blueprint into the statements each database needs: the column types, the names of keys and
  * indexes, and which changes SQLite has to make by rebuilding the table. `compileSchema.ts` writes the SQL.
  */
-import { type ColumnDdl, compileFragment, compileSchema, type DdlStatement, type ForeignKeyDdl, literal } from "../compileSchema";
+import {
+  type ColumnDdl,
+  compileFragment,
+  compileSchema,
+  type DdlStatement,
+  type ForeignKeyDdl,
+  literal,
+  type TableOptions,
+} from "../compileSchema";
 import type { Dialect } from "../dialect";
 import { RawSql, SqlIdentifier, SqlText, sql } from "../sql";
 import {
@@ -193,7 +201,7 @@ const indexStep = (dialect: Dialect, table: string, command: IndexCommand) => {
   return statement(dialect, { kind: "createIndex", table, name, columns: command.columns, unique: command.type === "unique" });
 };
 
-export const compileCreate = (dialect: Dialect, blueprint: Blueprint): SchemaStep[] => {
+export const compileCreate = (dialect: Dialect, blueprint: Blueprint, options?: TableOptions): SchemaStep[] => {
   const { table } = blueprint;
   if (blueprint.columns.some(({ spec }) => spec.change)) {
     throw new Error("Tenora: change() only works in schema.table(), not in schema.create().");
@@ -217,6 +225,7 @@ export const compileCreate = (dialect: Dialect, blueprint: Blueprint): SchemaSte
       columns: blueprint.columns.map(({ spec }) => columnDdl(dialect, table, spec)),
       primaryKey: primary && { name: primaryName(dialect, table, primary), columns: primary.columns },
       foreignKeys: commands.flatMap((command) => (command.type === "foreign" ? [foreignDdl(table, command.key)] : [])),
+      options,
     }),
   ];
   for (const command of commands) {
@@ -477,5 +486,5 @@ const setPrimaryKey = (definition: TableDefinition, columns: readonly string[], 
 
 const dropPrimaryKey = (definition: TableDefinition): TableDefinition => withoutPrimaryKey(definition);
 
-export const compileBlueprint = (dialect: Dialect, blueprint: Blueprint): SchemaStep[] =>
-  blueprint.creating ? compileCreate(dialect, blueprint) : compileAlter(dialect, blueprint);
+export const compileBlueprint = (dialect: Dialect, blueprint: Blueprint, options?: TableOptions): SchemaStep[] =>
+  blueprint.creating ? compileCreate(dialect, blueprint, options) : compileAlter(dialect, blueprint);

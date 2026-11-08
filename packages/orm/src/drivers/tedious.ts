@@ -147,7 +147,11 @@ export const createTediousPool = (connection: Record<string, unknown>, options: 
     classify,
     async acquire() {
       const entry = await resources.acquire();
-      const wrapped: DriverConnection = { query: (sql, parameters) => query(entry, sql, parameters) };
+      const wrapped: DriverConnection = {
+        query: (sql, parameters) => query(entry, sql, parameters),
+        // A statement without parameters goes as a batch, which takes several statements.
+        script: async (text) => void (await query(entry, text, [])),
+      };
       pooled.set(wrapped, entry);
       return wrapped;
     },

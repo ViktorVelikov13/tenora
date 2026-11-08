@@ -60,6 +60,10 @@ export const listFiles = async (directories: readonly string[], kind: "migration
   return found.map(({ name, file }) => ({ name, file }));
 };
 
+/** The migration files in the directories, in the order they run, without touching a database. */
+export const listMigrationFiles = (options: { directory?: string; directories?: readonly string[] }): Promise<SourceFile[]> =>
+  listFiles(resolveDirectories(options, "listMigrationFiles"), "migration");
+
 /** Imports a file, ESM or CommonJS, and reports which one failed. */
 export const importFile = async (file: string, kind: "migration" | "seed"): Promise<Record<string, unknown>> => {
   try {

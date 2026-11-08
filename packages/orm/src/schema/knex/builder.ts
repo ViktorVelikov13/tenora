@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { compileRaw } from "../../compile";
 import type { Connection } from "../../connection";
+import { hasColumn, hasTable } from "../../introspect";
 import { RawSql, sql } from "../../sql";
 import { runnerFor } from "../runner";
 import { KnexTableBuilder } from "./blueprint";
@@ -74,6 +75,16 @@ export class KnexSchemaBuilder implements PromiseLike<void> {
    */
   withOptions(options: KnexCompatOptions): KnexSchemaBuilder {
     return new KnexSchemaBuilder(this.connection, this.operations, { ...this.options, ...options });
+  }
+
+  /** Whether the table exists, right away: `if (!(await schema.hasTable("users"))) …`. */
+  hasTable(table: string): Promise<boolean> {
+    return hasTable(this.connection, table);
+  }
+
+  /** Whether the table has the column, right away. */
+  hasColumn(table: string, column: string): Promise<boolean> {
+    return hasColumn(this.connection, table, column);
   }
 
   createTable(table: string, callback: TableCallback): KnexSchemaBuilder {

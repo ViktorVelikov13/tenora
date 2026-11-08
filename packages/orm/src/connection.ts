@@ -11,6 +11,7 @@ import { isConcurrencyError, QueryError } from "./errors";
 import { QueryBuilder } from "./query/builder";
 import { SchemaBuilder } from "./schema/builder";
 import type { RawSql } from "./sql";
+import type { TableOptions } from "./compileSchema";
 import { type Scope, TransactionRoot, type TransactionOptions } from "./transaction";
 
 export type ConnectionConfig = {
@@ -18,7 +19,10 @@ export type ConnectionConfig = {
   client: Client;
   /** the SQL dialect, when the driver's default is not right, e.g. "mariadb" for a MariaDB server reached through mysql2 */
   dialect?: Dialect;
-  /** passed to the driver as is: host, port, user, password, database, ssl, … or filename for SQLite */
+  /**
+   * passed to the driver as is: host, port, user, password, database, ssl, … or filename for SQLite. On MySQL and
+   * MariaDB, `charset` and `collate` also go on every table the schema builders create.
+   */
   connection: Record<string, unknown>;
   pool?: PoolOptions;
 };
@@ -110,11 +114,20 @@ export class Transaction {
 
 export class Connection {
   readonly dialect: Dialect;
+  /** @internal What the schema builders add to CREATE TABLE. */
+  readonly tableOptions: TableOptions;
   readonly #pool: DriverPool;
 
   constructor(config: ConnectionConfig) {
-    this.#pool = createPool(config);
-    this.dialect = config.dialect ?? defaultDialect(this.#pool.driver);
+    // `collate` is not a driver option: mysql2 prints a warning for it.
+    const { collate, ...driverOptions } = config.connection;
+    const driver = resolveDriverName(config.client);
+    const mysqlFamily = driver === "mysql2" || driver === "mariadb";
+    this.#pool = createPool({ ...config, connection: mysqlFamily ? driverOptions : config.connection });
+    this.dialect = config.dialect ?? defaultDialect(driver);
+    this.tableOptions = mysqlFamily
+      ? { charset: driverOptions.charset as string | undefined, collate: collate as string | undefined }
+      : {};
   }
 
   /** The schema builder: `db.schema.create(…)`, and `db.schema.knex` for migrations converted from 0.x. */
@@ -235,6 +248,24 @@ export class Connection {
     const scope = explicit ? explicit.root.scope : currentContext().scopes.get(this);
     if (scope) return scope.root.query(compiled.sql, compiled.parameters, scope);
     return this.#pooled(compiled);
+  }
+
+  /**
+   * @internal Runs a script of several statements, exactly as written, on one pooled connection and outside any
+   * transaction: a schema dump.
+   */
+  async script(text: string): Promise<void> {
+    const client = await this.#pool.acquire();
+    let broken = false;
+    try {
+      await client.script(text);
+    } catch (cause) {
+      const kind = this.#pool.classify(cause);
+      broken = kind === "connection_lost";
+      throw new QueryError(cause, kind, text, []);
+    } finally {
+      await this.#pool.release(client, broken);
+    }
   }
 
   async #pooled({ sql, parameters }: CompiledQuery): Promise<DriverResult> {

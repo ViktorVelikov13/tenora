@@ -1,10 +1,11 @@
 import type { DatabaseErrorKind } from "../errors";
+import { splitMysqlScript } from "./mysqlScript";
 import { requireDriver } from "./resolve";
 import { DEFAULT_POOL, type DriverConnection, type DriverPool, type PoolOptions } from "./types";
 
 type ResultHeader = { affectedRows?: number; insertId?: number | string };
 type MysqlConnection = {
-  query(options: { sql: string; values: readonly unknown[] }): Promise<[unknown, unknown]>;
+  query(options: { sql: string; values?: readonly unknown[] }): Promise<[unknown, unknown]>;
   release(): void;
   destroy(): void;
 };
@@ -90,6 +91,9 @@ export const createMysql2Pool = (connection: Record<string, unknown>, options: P
           }
           const header = (result ?? {}) as ResultHeader;
           return { rows: [], affectedRows: header.affectedRows ?? 0, insertId: header.insertId };
+        },
+        async script(text) {
+          for (const statement of splitMysqlScript(text)) await raw.query({ sql: statement });
         },
       };
       connections.set(wrapped, raw);

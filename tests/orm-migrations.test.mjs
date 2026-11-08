@@ -10,6 +10,7 @@ import {
   createConnection,
   createMigrator,
   createSeeder,
+  listMigrationFiles,
   MigrationError,
   MigrationLockError,
   SeedError,
@@ -406,6 +407,57 @@ module.exports = migration({
         assert.equal(await exists("knex_style"), false);
       });
 
+      describe("on SQLite, foreign keys are off while a migration runs", { skip: !isSqlite }, () => {
+        const setUp = async () => {
+          tables("children", "parents");
+          await db.schema.create("parents", (t) => {
+            t.id();
+            t.string("name", 50);
+          });
+          await db.schema.create("children", (t) => {
+            t.id();
+            t.foreignId("parent_id").constrained("parents").cascadeOnDelete();
+          });
+          const id = await db.table("parents").insertGetId({ name: "a" });
+          await db.table("children").insert({ parent_id: id });
+          return id;
+        };
+        const enforced = async () => (await db.raw(sql`pragma foreign_keys`))[0].foreign_keys;
+
+        it("rebuilds a referenced table in a migration without deleting through the cascade", async () => {
+          await setUp();
+          const dir = folder({
+            "001_change.mjs": `export const up = ({ schema }) => schema.table("parents", (t) => t.text("name").change());\n`,
+            "002_knex.mjs": `export const compat = "knex";
+export const up = ({ schema }) => schema.alterTable("parents", (t) => t.text("name").nullable().alter());\n`,
+          });
+          assert.deepEqual((await createMigrator(db, { directory: dir }).latest()).migrations, ["001_change", "002_knex"]);
+          assert.equal(await db.table("children").count(), 1, "the children survived");
+          assert.equal(await enforced(), 1, "foreign keys are back on");
+          await assert.rejects(db.table("children").insert({ parent_id: 999 }), /FOREIGN KEY/);
+        });
+
+        it("fails a migration that leaves rows pointing nowhere, and undoes it", async () => {
+          await setUp();
+          const dir = folder({
+            "001_orphan.mjs": `export const up = ({ db }) => db.table("parents").delete();\n`,
+          });
+          const error = await createMigrator(db, { directory: dir }).latest().then(() => undefined, (e) => e);
+          assert.ok(error instanceof MigrationError);
+          assert.match(error.message, /left 1 row\(s\) pointing at rows that do not exist/);
+          assert.equal(await db.table("parents").count(), 1, "the delete was rolled back");
+          assert.deepEqual(await recorded(), []);
+          assert.equal(await enforced(), 1);
+        });
+
+        it("does not blame a migration for rows that were already broken", async () => {
+          const id = await setUp();
+          await db.schema.withoutForeignKeyConstraints(() => db.table("parents").where("id", id).delete());
+          const dir = folder({ "001_fine.mjs": `export const up = ({ db }) => db.table("parents").insert({ name: "b" });\n` });
+          assert.deepEqual((await createMigrator(db, { directory: dir }).latest()).migrations, ["001_fine"]);
+        });
+      });
+
       it("runs .ts migration files, recorded without their extension", async () => {
         tables("typed");
         const dir = folder({ "001_typed.ts": files.typed("typed"), "001_typed.d.ts": "export {};\n" });
@@ -540,6 +592,18 @@ describe("migration files", () => {
     await assert.rejects(migrator.rollback({ all: true }), /cannot roll back 003_one_way, 002_create_beta: no file/);
     assert.equal((await migrator.status()).ran.length, 3);
     await db.table("alpha").count();
+  });
+
+  it("refuses to carry on when a database never ran a migration that was pruned into a dump", async () => {
+    const dir = folder({ "002_create_gamma.mjs": `export const up = () => {};\n` });
+    const pruned = { migrations: ["001_pruned"], into: "schema/tenant.sql" };
+    const lagging = createMigrator(db, { directory: dir, pruned, table: "lagging_migrations" });
+    await assert.rejects(lagging.latest(), /never ran migration "001_pruned".*pruned into the schema dump schema\/tenant\.sql/);
+    assert.deepEqual((await lagging.status()).ran, []);
+
+    await db.table("lagging_migrations").insert({ name: "001_pruned", batch: 1, migrated_at: new Date(), source: "tenora" });
+    assert.deepEqual((await lagging.latest()).migrations, ["002_create_gamma"]);
+    assert.deepEqual((await listMigrationFiles({ directory: dir })).map((file) => file.name), ["002_create_gamma"]);
   });
 
   it("checks its options", () => {

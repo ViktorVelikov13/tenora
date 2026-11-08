@@ -21,6 +21,7 @@ export {
 export type { CompiledQuery } from "./compile";
 export {
   createMigrator,
+  listMigrationFiles,
   createSeeder,
   migration,
   MigrationError,

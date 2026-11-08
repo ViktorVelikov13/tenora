@@ -11,7 +11,7 @@ export {
   type SeedOptions,
 } from "./definitions";
 export { MigrationError, MigrationLockError, SeedError } from "./errors";
-export type { SourceFile } from "./files";
+export { listMigrationFiles, type SourceFile } from "./files";
 export {
   createMigrator,
   Migrator,

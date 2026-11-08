@@ -247,6 +247,24 @@ describe("the Knex-compatible schema builder writes what Knex 3.3 writes", () =>
     }
   });
 
+  it("takes the MySQL charset and collation from the connection config, in both schema builders", () => {
+    const connection = { charset: "utf8mb4", collate: "utf8mb4_unicode_ci" };
+    for (const dialect of ["mysql", "mariadb"]) {
+      const client = knex({ client: COMPILE[dialect].knex.client, connection });
+      const db = createConnection({ ...COMPILE[dialect].tenora, connection });
+      const build = (schema) => schema.createTable("t", (t) => t.increments());
+      assert.deepEqual(normalize(build(db.schema.knex).toSQL()), normalize(build(client.schema).toSQL()), dialect);
+      assert.match(
+        db.schema.create("t", (t) => t.id()).toSql()[0].sql,
+        / default character set utf8mb4 collate utf8mb4_unicode_ci$/,
+        dialect
+      );
+      void client.destroy();
+    }
+    const postgres = createConnection({ client: "pg", connection });
+    assert.doesNotMatch(postgres.schema.create("t", (t) => t.id()).toSql()[0].sql, /character set|collate/);
+  });
+
   it("keeps separate calls on one builder apart, and chains like Knex", () => {
     const schema = compilers.postgres.db.schema.knex;
     schema.createTable("a", (t) => t.increments());
@@ -784,6 +802,41 @@ describe("schema changes against a real database", () => {
         } finally {
           await kx.destroy();
           await db.schema.knex.dropTableIfExists("purchases").dropTableIfExists("orders").dropTableIfExists("customers");
+        }
+      });
+
+      it("answers hasTable and hasColumn, in both schema builders", async () => {
+        await db.schema.create("probed", (t) => {
+          t.id();
+          t.string("label");
+        });
+        for (const schema of [db.schema, db.schema.knex]) {
+          assert.equal(await schema.hasTable("probed"), true);
+          assert.equal(await schema.hasTable("not_there"), false);
+          assert.equal(await schema.hasColumn("probed", "label"), true);
+          assert.equal(await schema.hasColumn("probed", "not_there"), false);
+          assert.equal(await schema.hasColumn("not_there", "label"), false);
+        }
+        await db.schema.drop("probed");
+      });
+
+      it("creates tables with the connection's charset and collation", { skip: !["mysql", "mariadb"].includes(dialect) }, async () => {
+        const config = serverConfig(engine, databases.tenora);
+        const utf = createConnection({
+          ...config,
+          connection: { ...config.connection, charset: "utf8mb4", collate: "utf8mb4_unicode_ci" },
+        });
+        try {
+          await utf.schema.create("collated_laravel", (t) => t.id());
+          await utf.schema.knex.createTable("collated_knex", (t) => t.increments());
+          const rows = await utf.raw(
+            sql`select table_collation as c from information_schema.tables where table_schema = database() and table_name in ('collated_laravel', 'collated_knex')`
+          );
+          assert.deepEqual(rows.map((row) => row.c ?? row.C), ["utf8mb4_unicode_ci", "utf8mb4_unicode_ci"]);
+        } finally {
+          await utf.schema.dropIfExists("collated_laravel");
+          await utf.schema.dropIfExists("collated_knex");
+          await utf.destroy();
         }
       });
 

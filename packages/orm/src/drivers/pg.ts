@@ -4,7 +4,7 @@ import { DEFAULT_POOL, type DriverConnection, type DriverPool, type PoolOptions 
 
 type PgResult = { rows?: Record<string, unknown>[]; rowCount?: number | null; command?: string };
 type PgClient = {
-  query(text: string, values: readonly unknown[]): Promise<PgResult>;
+  query(text: string, values?: readonly unknown[]): Promise<unknown>;
   release(destroy?: boolean): void;
 };
 type PgPool = {
@@ -67,8 +67,12 @@ export const createPgPool = (connection: Record<string, unknown>, options: PoolO
       const client = await getPool().connect();
       const wrapped: DriverConnection = {
         async query(sql, parameters) {
-          const result = await client.query(sql, parameters);
+          const result = (await client.query(sql, parameters)) as PgResult;
           return { rows: result.rows ?? [], affectedRows: result.rowCount ?? 0, command: result.command };
+        },
+        async script(text) {
+          // Without values, pg uses the simple protocol, which takes several statements.
+          await client.query(text);
         },
       };
       clients.set(wrapped, client);

@@ -7,7 +7,7 @@ type Statement = {
   all(...values: unknown[]): Record<string, unknown>[];
   run(...values: unknown[]): { changes: number; lastInsertRowid: number | bigint };
 };
-type Database = { prepare(sql: string): Statement; close(): void };
+type Database = { prepare(sql: string): Statement; exec(sql: string): unknown; close(): void };
 type DatabaseConstructor = new (filename: string, options?: Record<string, unknown>) => Database;
 
 const classify = (error: unknown): DatabaseErrorKind | undefined => {
@@ -48,6 +48,9 @@ export const createBetterSqlite3Pool = (connection: Record<string, unknown>, opt
       }
       const info = statement.run(...values);
       return { rows: [], affectedRows: info.changes, insertId: info.lastInsertRowid };
+    },
+    async script(text) {
+      database!.exec(text);
     },
   };
 

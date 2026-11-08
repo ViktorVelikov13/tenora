@@ -12,6 +12,8 @@ export type DriverResult = {
 /** One physical connection, taken from the pool. */
 export interface DriverConnection {
   query(sql: string, parameters: readonly unknown[]): Promise<DriverResult>;
+  /** Runs several statements, exactly as written and with no parameters. */
+  script(text: string): Promise<void>;
 }
 
 export type PoolOptions = {

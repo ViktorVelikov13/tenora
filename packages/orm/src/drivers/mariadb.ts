@@ -1,10 +1,11 @@
 import type { DatabaseErrorKind } from "../errors";
+import { splitMysqlScript } from "./mysqlScript";
 import { requireDriver } from "./resolve";
 import { DEFAULT_POOL, type DriverConnection, type DriverPool, type PoolOptions } from "./types";
 
 type OkPacket = { affectedRows?: number; insertId?: number | bigint };
 type MariadbConnection = {
-  query(sql: string, values: readonly unknown[]): Promise<unknown>;
+  query(sql: string, values?: readonly unknown[]): Promise<unknown>;
   release(): Promise<void>;
   destroy(): void;
 };
@@ -71,6 +72,9 @@ export const createMariadbPool = (connection: Record<string, unknown>, options: 
           }
           const packet = (result ?? {}) as OkPacket;
           return { rows: [], affectedRows: packet.affectedRows ?? 0, insertId: packet.insertId };
+        },
+        async script(text) {
+          for (const statement of splitMysqlScript(text)) await raw.query(statement);
         },
       };
       connections.set(wrapped, raw);

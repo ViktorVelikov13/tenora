@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { CompiledQuery } from "../compile";
 import { compileSchema } from "../compileSchema";
 import type { Connection } from "../connection";
+import { hasColumn, hasTable } from "../introspect";
 import { Blueprint } from "./blueprint";
 import { compileBlueprint } from "./grammar";
 import { KnexSchemaBuilder } from "./knex/builder";
@@ -70,7 +71,7 @@ export class SchemaBuilder {
     if (result && typeof (result as PromiseLike<unknown>).then === "function") {
       throw new Error("Tenora: the table callback must not be async; it only describes the table.");
     }
-    return this.#change(() => compileBlueprint(this.connection.dialect, blueprint));
+    return this.#change(() => compileBlueprint(this.connection.dialect, blueprint, this.connection.tableOptions));
   }
 
   /** Creates a table: `create("users", (t) => { t.id(); t.string("email").unique(); t.timestamps(); })`. */
@@ -95,6 +96,16 @@ export class SchemaBuilder {
     return this.#change(() => [{ kind: "sql", compiled: compileSchema(this.connection.dialect, { kind: "renameTable", from, to }) }]);
   }
 
+  /** Whether the table exists in the connection's current schema (or database). */
+  hasTable(table: string): Promise<boolean> {
+    return hasTable(this.connection, table);
+  }
+
+  /** Whether the table has the column. */
+  hasColumn(table: string, column: string): Promise<boolean> {
+    return hasColumn(this.connection, table, column);
+  }
+
   /**
    * SQLite only: runs `fn` with foreign key enforcement off. SQLite switches it only outside a transaction, so a
    * migration that rebuilds a referenced table inside a transaction opens that transaction inside `fn`. Every table
@@ -111,6 +122,6 @@ export class SchemaBuilder {
 
   /** Knex's schema builder, for migrations converted from 0.x; it writes exactly the SQL Knex 3.3 wrote. */
   get knex(): KnexSchemaBuilder {
-    return new KnexSchemaBuilder(this.connection);
+    return new KnexSchemaBuilder(this.connection, [], this.connection.tableOptions);
   }
 }

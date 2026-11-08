@@ -44,6 +44,9 @@ export type ColumnDdl = {
   readonly references?: ForeignKeyDdl;
 };
 
+/** The charset and collation of a new table, on MySQL and MariaDB. */
+export type TableOptions = { readonly charset?: string; readonly collate?: string };
+
 export type DdlStatement =
   | {
       readonly kind: "createTable";
@@ -51,6 +54,7 @@ export type DdlStatement =
       readonly columns: readonly ColumnDdl[];
       readonly primaryKey?: { readonly name: string; readonly columns: readonly string[] };
       readonly foreignKeys: readonly ForeignKeyDdl[];
+      readonly options?: TableOptions;
     }
   | { readonly kind: "addColumns"; readonly table: string; readonly columns: readonly ColumnDdl[] }
   | { readonly kind: "changeColumn"; readonly table: string; readonly column: ColumnDdl }
@@ -148,6 +152,9 @@ export const compileSchema = (dialect: Dialect, statement: DdlStatement): Compil
       for (const key of statement.foreignKeys) {
         create = create.addForeignKeyConstraint(key.name, [...key.columns], key.table, [...key.references], foreignActions(dialect, key));
       }
+      const { charset, collate } = statement.options ?? {};
+      if (isMysql && charset) create = create.modifyEnd(kysql.raw(`default character set ${charset}`));
+      if (isMysql && collate) create = create.modifyEnd(kysql.raw(`collate ${collate}`));
       return plain(create.compile());
     }
     case "addColumns": {

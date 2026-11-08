@@ -1,4 +1,5 @@
 import { type Connection, withoutTransaction } from "../connection";
+import { sql } from "../sql";
 import { type ContextFactory, contextFor, type Migration, toMigration } from "./definitions";
 import { MigrationError, MigrationLockError } from "./errors";
 import { importFile, listFiles, resolveDirectories, type SourceFile } from "./files";
@@ -13,6 +14,11 @@ export type MigratorOptions = {
   table?: string;
   /** adds to what `up` and `down` receive besides `db`; called once for each migration, inside its transaction */
   context?: ContextFactory;
+  /**
+   * Migrations whose files are gone because a schema dump contains them. A database that never ran one cannot catch
+   * up, so `latest()` refuses instead of skipping it.
+   */
+  pruned?: { readonly migrations: readonly string[]; readonly into: string };
 };
 
 export type LatestResult = {
@@ -61,6 +67,34 @@ const toDate = (value: unknown): Date =>
     ? value
     : new Date(typeof value === "string" && /^\d+$/.test(value) ? Number(value) : (value as number | string));
 
+const brokenForeignKeys = async (db: Connection) =>
+  Number((await db.raw<{ n: number }>(sql`select count(*) as n from pragma_foreign_key_check`))[0].n);
+
+/**
+ * A migration's transaction on SQLite. Foreign keys go off before it starts, because SQLite ignores that switch inside
+ * a transaction, and a change that rebuilds a table others reference needs them off: dropping the old table would
+ * otherwise delete through ON DELETE CASCADE. Django does the same.
+ *
+ * So nothing cascades and nothing is checked while the migration runs, and the database is checked before it commits.
+ * Rows that were already broken do not count: 0.x's sqlite3 driver never enforced foreign keys.
+ */
+const sqliteTransaction = async (db: Connection, step: () => Promise<void>): Promise<void> => {
+  const [{ foreign_keys: enforced }] = await db.raw<{ foreign_keys: number }>(sql`pragma foreign_keys`);
+  if (!enforced) return db.transaction(step);
+  return db.schema.withoutForeignKeyConstraints(() =>
+    db.transaction(async () => {
+      const before = await brokenForeignKeys(db);
+      await step();
+      const added = (await brokenForeignKeys(db)) - before;
+      if (added > 0) {
+        throw new Error(
+          `Tenora: this migration left ${added} row(s) pointing at rows that do not exist. On SQLite, foreign keys are off while a migration runs, so ON DELETE CASCADE does not fire: delete those rows in the migration.`
+        );
+      }
+    })
+  );
+};
+
 /**
  * Runs migration files against one database and records them in its bookkeeping table. Every method runs outside
  * any transaction open around the call: the lock and each migration's transaction are the migrator's own.
@@ -70,6 +104,7 @@ export class Migrator {
   readonly lockTable: string;
   readonly directories: readonly string[];
   readonly #context: ContextFactory | undefined;
+  readonly #pruned: MigratorOptions["pruned"];
   #ready: Promise<void> | undefined;
 
   constructor(
@@ -82,6 +117,7 @@ export class Migrator {
     this.table = table;
     this.lockTable = `${table}_lock`;
     this.#context = options.context;
+    this.#pruned = options.pruned;
   }
 
   /** Runs every pending migration, in one new batch. */
@@ -91,6 +127,13 @@ export class Migrator {
         const [files, rows] = await Promise.all([this.#files(), this.#rows()]);
         const ran = new Set(rows.map((row) => row.name));
         const last = rows.reduce((max, row) => Math.max(max, row.batch), 0);
+        const onDisk = new Set(files.map((file) => file.name));
+        const lost = this.#pruned?.migrations.find((name) => !ran.has(name) && !onDisk.has(name));
+        if (lost) {
+          throw new Error(
+            `Tenora: this database never ran migration "${lost}", and its file was pruned into the schema dump ${this.#pruned!.into}. Restore the file from version control, run the migrations, then prune again.`
+          );
+        }
         const pending = files.filter((file) => !ran.has(file.name));
         if (!pending.length) return { batch: last, migrations: [] };
 
@@ -259,8 +302,9 @@ export class Migrator {
       await record();
     };
     try {
-      if (inTransaction) await db.transaction(step);
-      else await step();
+      if (!inTransaction) await step();
+      else if (db.dialect === "sqlite") await sqliteTransaction(db, step);
+      else await db.transaction(step);
     } catch (error) {
       const note = inTransaction
         ? ""
